@@ -1,6 +1,6 @@
 /*
 *	Target Override
-*	Copyright (C) 2021 Silvers
+*	Copyright (C) 2022 Silvers
 *
 *	This program is free software: you can redistribute it and/or modify
 *	it under the terms of the GNU General Public License as published by
@@ -18,7 +18,7 @@
 
 
 
-#define PLUGIN_VERSION 		"2.16"
+#define PLUGIN_VERSION 		"2.17"
 #define DEBUG_BENCHMARK		0			// 0=Off. 1=Benchmark only (for command). 2=Benchmark (displays on server). 3=PrintToServer various data.
 
 /*======================================================================================
@@ -32,6 +32,9 @@
 
 ========================================================================================
 	Change Log:
+
+2.17 (30-Jul-2022)
+	- Added option "12" to "order" to target the Survivor furthest ahead in flow distance. Requested by "yzybb".
 
 2.16 (09-Sep-2021)
 	- Fixed not reading the entire data configs "order" value when the string was longer than 15 characters.
@@ -167,8 +170,9 @@
 
 // Left4DHooks natives - optional - (added here to avoid requiring Left4DHooks include)
 native float L4D2Direct_GetFlowDistance(int client);
-native Address L4D2Direct_GetTerrorNavArea(float pos[3], float beneathLimit = 120.0);
+native Address L4D2Direct_GetTerrorNavArea(const float pos[3], float beneathLimit = 120.0);
 native float L4D2Direct_GetTerrorNavAreaFlow(Address pTerrorNavArea);
+native int L4D_GetHighestFlowSurvivor();
 
 
 
@@ -430,14 +434,14 @@ public void OnPluginEnd()
 //					LOAD DATA CONFIG
 // ====================================================================================================
 #if DEBUG_BENCHMARK == 1 || DEBUG_BENCHMARK == 2
-public Action CmdStats(int client, int args)
+Action CmdStats(int client, int args)
 {
 	ReplyToCommand(client, "Target Override: Stats: Min %f. Avg %f. Max %f", g_fBenchMin, g_fBenchAvg / g_iBenchTicks, g_fBenchMax);
 	return Plugin_Handled;
 }
 #endif
 
-public Action CmdReload(int client, int args)
+Action CmdReload(int client, int args)
 {
 	OnMapStart();
 	ReplyToCommand(client, "Target Override: Data config reloaded.");
@@ -515,12 +519,12 @@ public void OnConfigsExecuted()
 	IsAllowed();
 }
 
-public void ConVarChanged_Allow(Handle convar, const char[] oldValue, const char[] newValue)
+void ConVarChanged_Allow(Handle convar, const char[] oldValue, const char[] newValue)
 {
 	IsAllowed();
 }
 
-public void ConVarChanged_Cvars(Handle convar, const char[] oldValue, const char[] newValue)
+void ConVarChanged_Cvars(Handle convar, const char[] oldValue, const char[] newValue)
 {
 	GetCvars();
 }
@@ -665,7 +669,7 @@ bool IsAllowedGameMode()
 	return true;
 }
 
-public void OnGamemode(const char[] output, int caller, int activator, float delay)
+void OnGamemode(const char[] output, int caller, int activator, float delay)
 {
 	if( strcmp(output, "OnCoop") == 0 )
 		g_iCurrentMode = 1;
@@ -694,12 +698,12 @@ public void OnClientDisconnect(int client)
 	}
 }
 
-public void Event_EnteredCheckpoint(Event event, const char[] name, bool dontBroadcast)
+void Event_EnteredCheckpoint(Event event, const char[] name, bool dontBroadcast)
 {
 	g_bCheckpoint[GetClientOfUserId(event.GetInt("userid"))] = true;
 }
 
-public void Event_LeftCheckpoint(Event event, const char[] name, bool dontBroadcast)
+void Event_LeftCheckpoint(Event event, const char[] name, bool dontBroadcast)
 {
 	g_bCheckpoint[GetClientOfUserId(event.GetInt("userid"))] = false;
 }
@@ -747,7 +751,7 @@ void ResetVars(int client)
 	g_bPumCharger[client] = false;
 }
 
-public void Event_RoundStart(Event event, const char[] name, bool dontBroadcast)
+void Event_RoundStart(Event event, const char[] name, bool dontBroadcast)
 {
 	for( int i = 0; i <= MaxClients; i++ )
 	{
@@ -760,99 +764,99 @@ public void Event_RoundStart(Event event, const char[] name, bool dontBroadcast)
 	}
 }
 
-public void Event_PlayerSpawn(Event event, const char[] name, bool dontBroadcast)
+void Event_PlayerSpawn(Event event, const char[] name, bool dontBroadcast)
 {
 	int client = GetClientOfUserId(event.GetInt("userid"));
 	ResetVars(client);
 }
 
-public void Event_PlayerHurt(Event event, const char[] name, bool dontBroadcast)
+void Event_PlayerHurt(Event event, const char[] name, bool dontBroadcast)
 {
 	int client = GetClientOfUserId(event.GetInt("userid"));
 	g_iLastAttacker[client] = event.GetInt("attacker");
 }
 
-public void Event_ReviveSuccess(Event event, const char[] name, bool dontBroadcast)
+void Event_ReviveSuccess(Event event, const char[] name, bool dontBroadcast)
 {
 	int client = GetClientOfUserId(event.GetInt("subject"));
 	g_bIncapped[client] = false;
 	g_bLedgeGrab[client] = false;
 }
 
-public void Event_Incapacitated(Event event, const char[] name, bool dontBroadcast)
+void Event_Incapacitated(Event event, const char[] name, bool dontBroadcast)
 {
 	int client = GetClientOfUserId(event.GetInt("userid"));
 	g_bIncapped[client] = true;
 }
 
-public void Event_LedgeGrab(Event event, const char[] name, bool dontBroadcast)
+void Event_LedgeGrab(Event event, const char[] name, bool dontBroadcast)
 {
 	int client = GetClientOfUserId(event.GetInt("userid"));
 	g_bLedgeGrab[client] = true;
 }
 
-public void Event_SmokerStart(Event event, const char[] name, bool dontBroadcast)
+void Event_SmokerStart(Event event, const char[] name, bool dontBroadcast)
 {
 	int client = GetClientOfUserId(event.GetInt("victim"));
 	g_bPinSmoker[client] = true;
 }
 
-public void Event_SmokerEnd(Event event, const char[] name, bool dontBroadcast)
+void Event_SmokerEnd(Event event, const char[] name, bool dontBroadcast)
 {
 	int client = GetClientOfUserId(event.GetInt("victim"));
 	g_bPinSmoker[client] = false;
 }
 
-public void Event_BoomerStart(Event event, const char[] name, bool dontBroadcast)
+void Event_BoomerStart(Event event, const char[] name, bool dontBroadcast)
 {
 	int client = GetClientOfUserId(event.GetInt("userid"));
 	g_bPinBoomer[client] = true;
 }
 
-public void Event_BoomerEnd(Event event, const char[] name, bool dontBroadcast)
+void Event_BoomerEnd(Event event, const char[] name, bool dontBroadcast)
 {
 	int client = GetClientOfUserId(event.GetInt("userid"));
 	g_bPinBoomer[client] = false;
 }
 
-public void Event_HunterStart(Event event, const char[] name, bool dontBroadcast)
+void Event_HunterStart(Event event, const char[] name, bool dontBroadcast)
 {
 	int client = GetClientOfUserId(event.GetInt("victim"));
 	g_bPinHunter[client] = true;
 }
 
-public void Event_HunterEnd(Event event, const char[] name, bool dontBroadcast)
+void Event_HunterEnd(Event event, const char[] name, bool dontBroadcast)
 {
 	int client = GetClientOfUserId(event.GetInt("victim"));
 	g_bPinHunter[client] = false;
 }
 
-public void Event_JockeyStart(Event event, const char[] name, bool dontBroadcast)
+void Event_JockeyStart(Event event, const char[] name, bool dontBroadcast)
 {
 	int client = GetClientOfUserId(event.GetInt("victim"));
 	g_bPinJockey[client] = true;
 }
 
-public void Event_JockeyEnd(Event event, const char[] name, bool dontBroadcast)
+void Event_JockeyEnd(Event event, const char[] name, bool dontBroadcast)
 {
 	int client = GetClientOfUserId(event.GetInt("victim"));
 	g_bPinJockey[client] = false;
 }
 
-public void Event_ChargerPummel(Event event, const char[] name, bool dontBroadcast)
+void Event_ChargerPummel(Event event, const char[] name, bool dontBroadcast)
 {
 	int client = GetClientOfUserId(event.GetInt("victim"));
 	g_bPumCharger[client] = true;
 	g_bPinCharger[client] = true;
 }
 
-public void Event_ChargerStart(Event event, const char[] name, bool dontBroadcast)
+void Event_ChargerStart(Event event, const char[] name, bool dontBroadcast)
 {
 	int client = GetClientOfUserId(event.GetInt("victim"));
 	g_bPinCharger[client] = true;
 }
 
-public void Event_ChargerEnd(Event event, const char[] name, bool dontBroadcast)
+void Event_ChargerEnd(Event event, const char[] name, bool dontBroadcast)
 {
 	int client = GetClientOfUserId(event.GetInt("victim"));
 	g_bPinCharger[client] = false;
@@ -910,7 +914,7 @@ void DetourAddress(bool patch)
 	}
 }
 
-public MRESReturn ChooseVictim(int attacker, Handle hReturn)
+MRESReturn ChooseVictim(int attacker, Handle hReturn)
 {
 	#if DEBUG_BENCHMARK == 1 || DEBUG_BENCHMARK == 2
 	StartProfiling(g_Prof);
@@ -1602,6 +1606,19 @@ int OrderTest(int attacker, int victim, int team, int order)
 
 				#if DEBUG_BENCHMARK == 3
 				PrintToServer("Break order 11");
+				#endif
+			}
+		}
+
+		// 11=Furthest Ahead
+		case 12:
+		{
+			if( g_bLeft4DHooks && L4D_GetHighestFlowSurvivor() == victim )
+			{
+				newVictim = victim;
+
+				#if DEBUG_BENCHMARK == 3
+				PrintToServer("Break order 12");
 				#endif
 			}
 		}
