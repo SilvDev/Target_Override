@@ -18,7 +18,7 @@
 
 
 
-#define PLUGIN_VERSION 		"2.17"
+#define PLUGIN_VERSION 		"2.18"
 #define DEBUG_BENCHMARK		0			// 0=Off. 1=Benchmark only (for command). 2=Benchmark (displays on server). 3=PrintToServer various data.
 
 /*======================================================================================
@@ -32,6 +32,12 @@
 
 ========================================================================================
 	Change Log:
+
+2.18 (10-Aug-2022)
+	- Added cvar "l4d_target_override_team" to specify which Survivor teams can be targeted.
+	- Added option "dist" to the data config to set how close the Special Infected must be to a target to prevent changing target.
+	- Added option "time" to the data config to set the duration of targeting the last attacker before being allowed to change target.
+	- Fixed the wait time and last attacker interfering with selecting a new target. Thanks to "moschinovac" for reporting.
 
 2.17 (30-Jul-2022)
 	- Added option "12" to "order" to target the Survivor furthest ahead in flow distance. Requested by "yzybb".
@@ -164,6 +170,7 @@
 #pragma newdecls required
 
 #include <sourcemod>
+#include <sdkhooks>
 #include <sdktools>
 #include <dhooks>
 // #include <left4dhooks>
@@ -190,9 +197,9 @@ float g_iBenchTicks;
 #define GAMEDATA			"l4d_target_override"
 #define CONFIG_DATA			"data/l4d_target_override.cfg"
 
-ConVar g_hCvarAllow, g_hCvarMPGameMode, g_hCvarModes, g_hCvarModesOff, g_hCvarModesTog, g_hCvarSpecials, g_hCvarType, g_hDecayDecay;
+ConVar g_hCvarAllow, g_hCvarMPGameMode, g_hCvarModes, g_hCvarModesOff, g_hCvarModesTog, g_hCvarSpecials, g_hCvarTeam, g_hCvarType, g_hDecayDecay;
 bool g_bCvarAllow, g_bMapStarted, g_bLateLoad, g_bLeft4Dead2, g_bLeft4DHooks;
-int g_iCvarSpecials, g_iCvarType;
+int g_iCvarSpecials, g_iCvarTeam, g_iCvarType;
 float g_fDecayDecay;
 Handle g_hDetour;
 
@@ -219,10 +226,13 @@ int g_iOptionVoms[MAX_SPECIAL];
 int g_iOptionVoms2[MAX_SPECIAL];
 int g_iOptionSafe[MAX_SPECIAL];
 float g_fOptionRange[MAX_SPECIAL];
+float g_fOptionDist[MAX_SPECIAL];
+float g_fOptionLast[MAX_SPECIAL];
 float g_fOptionWait[MAX_SPECIAL];
 
 #define MAX_PLAY		MAXPLAYERS+1
 float g_fLastSwitch[MAX_PLAY];
+float g_fLastAttack[MAX_PLAY];
 int g_iLastAttacker[MAX_PLAY];
 int g_iLastOrders[MAX_PLAY];
 int g_iLastVictim[MAX_PLAY];
@@ -234,7 +244,7 @@ bool g_bPinHunter[MAX_PLAY];
 bool g_bPinJockey[MAX_PLAY];
 bool g_bPinCharger[MAX_PLAY];
 bool g_bPumCharger[MAX_PLAY];
-bool g_bCheckpoint[MAXPLAYERS+1];
+bool g_bCheckpoint[MAX_PLAY];
 
 enum
 {
@@ -245,6 +255,13 @@ enum
 	INDEX_SPITTER	= 4,
 	INDEX_JOCKEY	= 5,
 	INDEX_CHARGER	= 6
+}
+
+enum
+{
+	INDEX_TARG_DIST,
+	INDEX_TARG_VIC,
+	INDEX_TARG_TEAM
 }
 
 
@@ -365,6 +382,7 @@ public void OnPluginStart()
 		g_hCvarSpecials =	CreateConVar(	"l4d_target_override_specials",			"127",				"Override these Specials target function: 1=Smoker, 2=Boomer, 4=Hunter, 8=Spitter, 16=Jockey, 32=Charger, 64=Tank. 127=All. Add numbers together.", CVAR_FLAGS );
 	else
 		g_hCvarSpecials =	CreateConVar(	"l4d_target_override_specials",			"15",				"Override these Specials target function: 1=Smoker, 2=Boomer, 4=Hunter, 8=Tank. 15=All. Add numbers together.", CVAR_FLAGS );
+	g_hCvarTeam =			CreateConVar(	"l4d_target_override_team",				"2",				"Which Survivor teams should be targeted. 2=Default Survivors. 4=Holding and Passing bots. 6=Both.", CVAR_FLAGS );
 	g_hCvarType =			CreateConVar(	"l4d_target_override_type",				"1",				"How should the plugin search through Survivors. 1=Nearest visible (defaults to games method on fail). 2=All Survivors from the nearest. 3=Nearest by flow distance (requires Left4DHooks plugin, defaults to type 2).", CVAR_FLAGS );
 	CreateConVar(							"l4d_target_override_version",			PLUGIN_VERSION,		"Target Override plugin version.", FCVAR_NOTIFY|FCVAR_DONTRECORD);
 	AutoExecConfig(true,					"l4d_target_override");
@@ -378,6 +396,7 @@ public void OnPluginStart()
 	g_hCvarAllow.AddChangeHook(ConVarChanged_Allow);
 	g_hDecayDecay.AddChangeHook(ConVarChanged_Cvars);
 	g_hCvarSpecials.AddChangeHook(ConVarChanged_Cvars);
+	g_hCvarTeam.AddChangeHook(ConVarChanged_Cvars);
 	g_hCvarType.AddChangeHook(ConVarChanged_Cvars);
 
 
@@ -501,6 +520,8 @@ void ExplodeToArray(char[] key, KeyValues hFile, int index, int arr[MAX_ORDERS])
 		g_iOptionIncap[index] = hFile.GetNum("incap");
 		g_iOptionVoms[index] = hFile.GetNum("voms");
 		g_iOptionVoms2[index] = hFile.GetNum("voms2");
+		g_fOptionDist[index] = hFile.GetFloat("dist");
+		g_fOptionLast[index] = hFile.GetFloat("time");
 		g_fOptionRange[index] = hFile.GetFloat("range");
 		g_fOptionWait[index] = hFile.GetFloat("wait");
 		g_iOptionLast[index] = hFile.GetNum("last");
@@ -533,6 +554,7 @@ void GetCvars()
 {
 	g_fDecayDecay =		g_hDecayDecay.FloatValue;
 	g_iCvarSpecials =	g_hCvarSpecials.IntValue;
+	g_iCvarTeam =		g_hCvarTeam.IntValue;
 	g_iCvarType =		g_hCvarType.IntValue;
 }
 
@@ -741,6 +763,7 @@ void ResetVars(int client)
 	g_iLastOrders[client] = 0;
 	g_iLastVictim[client] = 0;
 	g_fLastSwitch[client] = 0.0;
+	g_fLastAttack[client] = 0.0;
 	g_bIncapped[client] = false;
 	g_bLedgeGrab[client] = false;
 	g_bPinBoomer[client] = false;
@@ -757,7 +780,7 @@ void Event_RoundStart(Event event, const char[] name, bool dontBroadcast)
 	{
 		ResetVars(i);
 
-		if( i && IsClientInGame(i) && GetClientTeam(i) == 2 )
+		if( i && IsClientInGame(i) && ValidateTeam(i) == 2 )
 			g_bCheckpoint[i] = true;
 		else
 			g_bCheckpoint[i] = false;
@@ -773,7 +796,17 @@ void Event_PlayerSpawn(Event event, const char[] name, bool dontBroadcast)
 void Event_PlayerHurt(Event event, const char[] name, bool dontBroadcast)
 {
 	int client = GetClientOfUserId(event.GetInt("userid"));
-	g_iLastAttacker[client] = event.GetInt("attacker");
+	int attacker = event.GetInt("attacker");
+	if( attacker )
+	{
+		int type = event.GetInt("type");
+
+		if( type & (DMG_BULLET|DMG_SLASH|DMG_CLUB) )
+		{
+			g_iLastAttacker[client] = attacker;
+			g_fLastAttack[client] = GetGameTime();
+		}
+	}
 }
 
 void Event_ReviveSuccess(Event event, const char[] name, bool dontBroadcast)
@@ -968,13 +1001,13 @@ MRESReturn ChooseVictim(int attacker, Handle hReturn)
 	if( lastVictim )
 	{
 		// Player disconnected or player dead, otherwise validate last selected order still applies
-		if( IsClientInGame(lastVictim) == true && IsPlayerAlive(lastVictim) )
+		if( IsClientInGame(lastVictim) && IsPlayerAlive(lastVictim) )
 		{
 			#if DEBUG_BENCHMARK == 3
 			PrintToServer("=== Test Last: Order: %d. newVictim %d (%N)", g_iLastOrders[attacker], lastVictim, lastVictim);
 			#endif
 
-			newVictim = OrderTest(attacker, lastVictim, GetClientTeam(lastVictim), g_iLastOrders[attacker]);
+			newVictim = OrderTest(attacker, lastVictim, ValidateTeam(lastVictim), class, g_iLastOrders[attacker]);
 
 			#if DEBUG_BENCHMARK == 3
 			PrintToServer("=== Test Last: newVictim %d (%N)", lastVictim, lastVictim);
@@ -1001,12 +1034,33 @@ MRESReturn ChooseVictim(int attacker, Handle hReturn)
 			#endif
 
 			#if DEBUG_BENCHMARK == 3
-			PrintToServer("=== Test Last: wait delay.");
+			PrintToServer("=== Test Last: wait delay (%0.2f).", GetGameTime() - g_fLastSwitch[attacker]);
 			#endif
 			return MRES_Supercede;
 		}
 		else
 		{
+			if( newVictim && g_fOptionDist[class] )
+			{
+				static float vPos[3], vVec[3];
+				GetClientAbsOrigin(newVictim, vPos);
+				GetClientAbsOrigin(attacker, vVec);
+				float dist = GetVectorDistance(vPos, vVec);
+
+				if( dist < g_fOptionDist[class] )
+				{
+					#if DEBUG_BENCHMARK == 3
+					PrintToServer("=== Test Dist: within %0.2f / %0.2f range to keep target.", dist, g_fOptionDist[class]);
+					#endif
+
+					g_fLastSwitch[attacker] = GetGameTime() + g_fOptionWait[class];
+
+					// CONTINUE OVERRIDE LAST
+					DHookSetReturn(hReturn, newVictim);
+					return MRES_Supercede;
+				}
+			}
+
 			#if DEBUG_BENCHMARK == 3
 			PrintToServer("=== Test Last: wait reset.");
 			#endif
@@ -1034,14 +1088,14 @@ MRESReturn ChooseVictim(int attacker, Handle hReturn)
 		case 1:
 		{
 			GetClientEyePosition(attacker, vPos);
-			numClients = GetClientsInRange(vPos, RangeType_Visibility, targets, MAXPLAYERS);
+			numClients = GetClientsInRange(vPos, RangeType_Visibility, targets, MAX_PLAY);
 		}
 		case 2, 3:
 		{
 			GetClientAbsOrigin(attacker, vPos);
 			for( int i = 1; i <= MaxClients; i++ )
 			{
-				if( IsClientInGame(i) && GetClientTeam(i) == 2 && IsPlayerAlive(i) )
+				if( IsClientInGame(i) && ValidateTeam(i) == 2 && IsPlayerAlive(i) )
 				{
 					targets[numClients++] = i;
 				}
@@ -1112,7 +1166,7 @@ MRESReturn ChooseVictim(int attacker, Handle hReturn)
 
 		if( victim && IsPlayerAlive(victim) )
 		{
-			team = GetClientTeam(victim);
+			team = ValidateTeam(victim);
 			// Option "voms2" then allow attacking vomited survivors ELSE not vomited
 			// Option "voms" then allow choosing team 3 when vomited
 			if( (team == 2 && (g_iOptionVoms2[class] == 1 || g_bPinBoomer[i] == false) ) ||
@@ -1158,8 +1212,8 @@ MRESReturn ChooseVictim(int attacker, Handle hReturn)
 					if( dist != 999999.0 && (dist < g_fOptionRange[class] || g_fOptionRange[class] == 0.0) )
 					{
 						index = aTargets.Push(dist);
-						aTargets.Set(index, victim, 1);
-						aTargets.Set(index, team, 2);
+						aTargets.Set(index, victim, INDEX_TARG_VIC);
+						aTargets.Set(index, team, INDEX_TARG_TEAM);
 					}
 				}
 			}
@@ -1204,7 +1258,7 @@ MRESReturn ChooseVictim(int attacker, Handle hReturn)
 
 		for( int i = 1; i <= MaxClients; i++ )
 		{
-			if( IsClientInGame(i) && GetClientTeam(i) == 2 && IsPlayerAlive(i) )
+			if( IsClientInGame(i) && ValidateTeam(i) == 2 && IsPlayerAlive(i) )
 			{
 				if( g_bIncapped[i] == false )
 				{
@@ -1253,14 +1307,7 @@ MRESReturn ChooseVictim(int attacker, Handle hReturn)
 
 
 		// Last Attacker enabled?
-		if( order == 7 )
-		{
-			if( g_iOptionLast[class] == 0 ) continue;
-
-			// Don't stop targeting if really close
-			dist = aTargets.Get(0, 0); // 0 = Nearest player, 0 = distance.
-			if( dist <= 250.0) continue;
-		}
+		if( order == 7 && g_iOptionLast[class] == 0 ) continue;
 
 
 
@@ -1269,7 +1316,7 @@ MRESReturn ChooseVictim(int attacker, Handle hReturn)
 		// =========================
 		for( int i = 0; i < len; i++ )
 		{
-			victim = aTargets.Get(i, 1);
+			victim = aTargets.Get(i, INDEX_TARG_VIC);
 
 
 
@@ -1286,8 +1333,8 @@ MRESReturn ChooseVictim(int attacker, Handle hReturn)
 
 
 
-			team = aTargets.Get(i, 2);
-			// dist = aTargets.Get(i, 0);
+			team = aTargets.Get(i, INDEX_TARG_TEAM);
+			// dist = aTargets.Get(i, INDEX_TARG_DIST);
 
 
 
@@ -1333,18 +1380,16 @@ MRESReturn ChooseVictim(int attacker, Handle hReturn)
 			// =========================
 			// OPTION: "order"
 			// =========================
-			newVictim = OrderTest(attacker, victim, team, order);
+			newVictim = OrderTest(attacker, victim, team, class, order);
 
 			#if DEBUG_BENCHMARK == 3
 			PrintToServer("Order %d newVictim %d (%N)", order, newVictim, newVictim);
 			#endif
 
-			if( newVictim ) break;
-			if( order == 0 ) break;
+			if( newVictim || order == 0 ) break;
 		}
 
-		if( newVictim ) break;
-		if( order == 0 ) break;
+		if( newVictim || order == 0 ) break;
 	}
 
 
@@ -1362,7 +1407,11 @@ MRESReturn ChooseVictim(int attacker, Handle hReturn)
 	// =========================
 	if( newVictim != g_iLastVictim[attacker] )
 	{
-		g_iLastOrders[attacker] = orders;
+		#if DEBUG_BENCHMARK == 3
+		PrintToServer("New order victim selected: %d (%N) (order %d/%d)", newVictim, newVictim, order, orders);
+		#endif
+
+		g_iLastOrders[attacker] = order;
 		g_iLastVictim[attacker] = newVictim;
 		g_fLastSwitch[attacker] = GetGameTime() + g_fOptionWait[class];
 	}
@@ -1410,8 +1459,12 @@ MRESReturn ChooseVictim(int attacker, Handle hReturn)
 	return MRES_Ignored;
 }
 
-int OrderTest(int attacker, int victim, int team, int order)
+int OrderTest(int attacker, int victim, int team, int class, int order)
 {
+	#if DEBUG_BENCHMARK == 3
+	PrintToServer("Begin OrderTest for (%d - %N). Test (%d - %N) with order: %d", attacker, attacker, victim, victim, order);
+	#endif
+
 	int newVictim;
 
 	switch( order )
@@ -1510,17 +1563,21 @@ int OrderTest(int attacker, int victim, int team, int order)
 		// 7=Last Attacker
 		case 7:
 		{
-			if( g_iLastAttacker[attacker] )
+			if( g_iLastAttacker[attacker] && g_fLastAttack[attacker] + g_fOptionLast[class] > GetGameTime() )
 			{
 				victim = GetClientOfUserId(g_iLastAttacker[attacker]);
-				if( victim && IsPlayerAlive(victim) && GetClientTeam(victim) == 2 )
+				if( victim && IsPlayerAlive(victim) && ValidateTeam(victim) == 2 )
 				{
 					newVictim = victim;
-				}
 
-				#if DEBUG_BENCHMARK == 3
-				PrintToServer("Break order 7");
-				#endif
+					#if DEBUG_BENCHMARK == 3
+					PrintToServer("Break order 7");
+					#endif
+				}
+				else
+				{
+					g_iLastAttacker[attacker] = 0;
+				}
 			}
 		}
 
@@ -1533,7 +1590,7 @@ int OrderTest(int attacker, int victim, int team, int order)
 
 			for( int i = 1; i <= MaxClients; i++ )
 			{
-				if( IsClientInGame(i) && GetClientTeam(i) == 2 && IsPlayerAlive(i) )
+				if( IsClientInGame(i) && ValidateTeam(i) == 2 && IsPlayerAlive(i) )
 				{
 					health = RoundFloat(GetClientHealth(i) + GetTempHealth(i));
 					if( health < total )
@@ -1563,7 +1620,7 @@ int OrderTest(int attacker, int victim, int team, int order)
 
 			for( int i = 1; i <= MaxClients; i++ )
 			{
-				if( IsClientInGame(i) && GetClientTeam(i) == 2 && IsPlayerAlive(i) )
+				if( IsClientInGame(i) && ValidateTeam(i) == 2 && IsPlayerAlive(i) )
 				{
 					health = RoundFloat(GetClientHealth(i) + GetTempHealth(i));
 					if( health > total )
@@ -1638,4 +1695,17 @@ float GetTempHealth(int client)
 	float fHealth = GetEntPropFloat(client, Prop_Send, "m_healthBuffer");
 	fHealth -= (GetGameTime() - GetEntPropFloat(client, Prop_Send, "m_healthBufferTime")) * g_fDecayDecay;
 	return fHealth < 0.0 ? 0.0 : fHealth;
+}
+
+int ValidateTeam(int client)
+{
+	int team = GetClientTeam(client);
+	switch( team )
+	{
+		case 2:		if( 2 & g_iCvarTeam) return 2;
+		case 4:		if( 4 & g_iCvarTeam) return 2;
+		case 3:		return 3;
+	}
+
+	return 0;
 }
