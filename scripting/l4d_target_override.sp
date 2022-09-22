@@ -18,7 +18,7 @@
 
 
 
-#define PLUGIN_VERSION 		"2.18"
+#define PLUGIN_VERSION 		"2.19"
 #define DEBUG_BENCHMARK		0			// 0=Off. 1=Benchmark only (for command). 2=Benchmark (displays on server). 3=PrintToServer various data.
 
 /*======================================================================================
@@ -32,6 +32,10 @@
 
 ========================================================================================
 	Change Log:
+
+2.19 (22-Sep-2022)
+	- Added option "13" to "order" to target the Survivor furthest ahead in flow distance. Requested by "axelnieves2012".
+	- Added option "targeted" to the data config to prevent targeting someone that's already targeted by another Special Infected. Requested by "axelnieves2012".
 
 2.18 (10-Aug-2022)
 	- Added cvar "l4d_target_override_team" to specify which Survivor teams can be targeted.
@@ -209,7 +213,7 @@ int g_iFixCount, g_iFixMatch;
 
 
 
-#define MAX_ORDERS		10
+#define MAX_ORDERS		12
 int g_iOrderTank[MAX_ORDERS];
 int g_iOrderSmoker[MAX_ORDERS];
 int g_iOrderBoomer[MAX_ORDERS];
@@ -225,6 +229,7 @@ int g_iOptionIncap[MAX_SPECIAL];
 int g_iOptionVoms[MAX_SPECIAL];
 int g_iOptionVoms2[MAX_SPECIAL];
 int g_iOptionSafe[MAX_SPECIAL];
+int g_iOptionTarg[MAX_SPECIAL];
 float g_fOptionRange[MAX_SPECIAL];
 float g_fOptionDist[MAX_SPECIAL];
 float g_fOptionLast[MAX_SPECIAL];
@@ -293,6 +298,7 @@ public APLRes AskPluginLoad2(Handle myself, bool late, char[] error, int err_max
 	MarkNativeAsOptional("L4D2Direct_GetFlowDistance");
 	MarkNativeAsOptional("L4D2Direct_GetTerrorNavArea");
 	MarkNativeAsOptional("L4D2Direct_GetTerrorNavAreaFlow");
+	MarkNativeAsOptional("L4D_GetHighestFlowSurvivor");
 
 	g_bLateLoad = late;
 	return APLRes_Success;
@@ -508,7 +514,7 @@ void ExplodeToArray(char[] key, KeyValues hFile, int index, int arr[MAX_ORDERS])
 		char buffer[32];
 		char buffers[MAX_ORDERS][3];
 
-		hFile.GetString("order", buffer, sizeof(buffer), "0,0,0,0,0,0,0,0,0,0");
+		hFile.GetString("order", buffer, sizeof(buffer), "0,0,0,0,0,0,0,0,0,0,0,0,0");
 		ExplodeString(buffer, ",", buffers, MAX_ORDERS, sizeof(buffers[]));
 
 		for( int i = 0; i < MAX_ORDERS; i++ )
@@ -526,6 +532,7 @@ void ExplodeToArray(char[] key, KeyValues hFile, int index, int arr[MAX_ORDERS])
 		g_fOptionWait[index] = hFile.GetFloat("wait");
 		g_iOptionLast[index] = hFile.GetNum("last");
 		g_iOptionSafe[index] = hFile.GetNum("safe");
+		g_iOptionTarg[index] = hFile.GetNum("targeted");
 		hFile.Rewind();
 	}
 }
@@ -1017,9 +1024,6 @@ MRESReturn ChooseVictim(int attacker, Handle hReturn)
 		// Not reached delay time
 		if( newVictim && GetGameTime() <= g_fLastSwitch[attacker] )
 		{
-			// CONTINUE OVERRIDE LAST
-			DHookSetReturn(hReturn, newVictim);
-
 			#if DEBUG_BENCHMARK == 1 || DEBUG_BENCHMARK == 2
 			StopProfiling(g_Prof);
 			float speed = GetProfilerTime(g_Prof);
@@ -1036,6 +1040,9 @@ MRESReturn ChooseVictim(int attacker, Handle hReturn)
 			#if DEBUG_BENCHMARK == 3
 			PrintToServer("=== Test Last: wait delay (%0.2f).", GetGameTime() - g_fLastSwitch[attacker]);
 			#endif
+
+			// CONTINUE OVERRIDE LAST
+			DHookSetReturn(hReturn, newVictim);
 			return MRES_Supercede;
 		}
 		else
@@ -1175,6 +1182,33 @@ MRESReturn ChooseVictim(int attacker, Handle hReturn)
 				// Saferoom test
 				if( !g_iOptionSafe[class] || !g_bCheckpoint[victim] )
 				{
+					// Already targeted test
+					if( g_iOptionTarg[class] )
+					{
+						for( int x = 1; x <= MaxClients; x++ )
+						{
+							if( x != attacker && g_iLastVictim[x] == victim )
+							{
+								#if DEBUG_BENCHMARK == 3
+								if( IsClientInGame(x) )
+								{
+									PrintToServer("%N is ignoring %N already targeted by %N", attacker, victim, x);
+								}
+								#endif
+
+								if( IsClientInGame(x) )
+								{
+									victim = 0;
+									break;
+								}
+
+								g_iLastVictim[x] = 0;
+							}
+						}
+
+						if( victim == 0 ) continue;
+					}
+
 					if( type == 3 )
 					{
 						// Attempt to get flow distance from position and nav address
@@ -1667,10 +1701,23 @@ int OrderTest(int attacker, int victim, int team, int class, int order)
 			}
 		}
 
-		// 11=Furthest Ahead
+		// 12=Furthest Ahead
 		case 12:
 		{
 			if( g_bLeft4DHooks && L4D_GetHighestFlowSurvivor() == victim )
+			{
+				newVictim = victim;
+
+				#if DEBUG_BENCHMARK == 3
+				PrintToServer("Break order 12");
+				#endif
+			}
+		}
+
+		// 13=Reviving someone
+		case 13:
+		{
+			if( GetEntPropEnt(victim, Prop_Send, "m_reviveTarget") > 0 )
 			{
 				newVictim = victim;
 
