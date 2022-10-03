@@ -18,7 +18,7 @@
 
 
 
-#define PLUGIN_VERSION 		"2.19"
+#define PLUGIN_VERSION 		"2.20"
 #define DEBUG_BENCHMARK		0			// 0=Off. 1=Benchmark only (for command). 2=Benchmark (displays on server). 3=PrintToServer various data.
 
 /*======================================================================================
@@ -32,6 +32,10 @@
 
 ========================================================================================
 	Change Log:
+
+2.20 (03-Oct-2022)
+	- Added option "14" to target someone healing whose health is below "survivor_limp_health" cvar value. Added by "axelnieves2012".
+	- Fixed order "12" and "13" being switched. Thanks to "axelnieves2012" for reporting.
 
 2.19 (22-Sep-2022)
 	- Added option "13" to "order" to target the Survivor furthest ahead in flow distance. Requested by "axelnieves2012".
@@ -121,7 +125,7 @@
 	- Initial Release.
 
 	- Combined L4D1 and L4D2 versions into 1 plugin.
-	- Major changes to how the plugin works. 
+	- Major changes to how the plugin works.
 	- Now has a data config to choose preferences for each Special Infected.
 
 	- Renamed plugin (delete the old .smx - added check to prevent duplicate plugins).
@@ -201,10 +205,10 @@ float g_iBenchTicks;
 #define GAMEDATA			"l4d_target_override"
 #define CONFIG_DATA			"data/l4d_target_override.cfg"
 
-ConVar g_hCvarAllow, g_hCvarMPGameMode, g_hCvarModes, g_hCvarModesOff, g_hCvarModesTog, g_hCvarSpecials, g_hCvarTeam, g_hCvarType, g_hDecayDecay;
+ConVar g_hCvarAllow, g_hCvarMPGameMode, g_hCvarModes, g_hCvarModesOff, g_hCvarModesTog, g_hCvarSpecials, g_hCvarTeam, g_hCvarType, g_hDecayDecay, g_hCvarLimp;
 bool g_bCvarAllow, g_bMapStarted, g_bLateLoad, g_bLeft4Dead2, g_bLeft4DHooks;
 int g_iCvarSpecials, g_iCvarTeam, g_iCvarType;
-float g_fDecayDecay;
+float g_fDecayDecay, g_fCvarLimp;
 Handle g_hDetour;
 
 ArrayList g_BytesSaved;
@@ -393,6 +397,7 @@ public void OnPluginStart()
 	CreateConVar(							"l4d_target_override_version",			PLUGIN_VERSION,		"Target Override plugin version.", FCVAR_NOTIFY|FCVAR_DONTRECORD);
 	AutoExecConfig(true,					"l4d_target_override");
 
+	g_hCvarLimp = FindConVar("survivor_limp_health");
 	g_hDecayDecay = FindConVar("pain_pills_decay_rate");
 	g_hCvarMPGameMode = FindConVar("mp_gamemode");
 	g_hCvarMPGameMode.AddChangeHook(ConVarChanged_Allow);
@@ -400,10 +405,11 @@ public void OnPluginStart()
 	g_hCvarModesOff.AddChangeHook(ConVarChanged_Allow);
 	g_hCvarModesTog.AddChangeHook(ConVarChanged_Allow);
 	g_hCvarAllow.AddChangeHook(ConVarChanged_Allow);
-	g_hDecayDecay.AddChangeHook(ConVarChanged_Cvars);
 	g_hCvarSpecials.AddChangeHook(ConVarChanged_Cvars);
 	g_hCvarTeam.AddChangeHook(ConVarChanged_Cvars);
 	g_hCvarType.AddChangeHook(ConVarChanged_Cvars);
+	g_hDecayDecay.AddChangeHook(ConVarChanged_Cvars);
+	g_hCvarLimp.AddChangeHook(ConVarChanged_Cvars);
 
 
 
@@ -560,6 +566,7 @@ void ConVarChanged_Cvars(Handle convar, const char[] oldValue, const char[] newV
 void GetCvars()
 {
 	g_fDecayDecay =		g_hDecayDecay.FloatValue;
+	g_fCvarLimp =		g_hCvarLimp.FloatValue;
 	g_iCvarSpecials =	g_hCvarSpecials.IntValue;
 	g_iCvarTeam =		g_hCvarTeam.IntValue;
 	g_iCvarType =		g_hCvarType.IntValue;
@@ -916,7 +923,7 @@ void PatchAddress(bool patch)
 
 	if( !patched && patch )
 	{
-		patched = true;	
+		patched = true;
 
 		for( int i = 0; i < g_iFixCount; i++ )
 		{
@@ -1701,10 +1708,10 @@ int OrderTest(int attacker, int victim, int team, int class, int order)
 			}
 		}
 
-		// 12=Furthest Ahead
+		// 12=Reviving someone
 		case 12:
 		{
-			if( g_bLeft4DHooks && L4D_GetHighestFlowSurvivor() == victim )
+			if( GetEntPropEnt(victim, Prop_Send, "m_reviveTarget") > 0 )
 			{
 				newVictim = victim;
 
@@ -1714,16 +1721,33 @@ int OrderTest(int attacker, int victim, int team, int class, int order)
 			}
 		}
 
-		// 13=Reviving someone
+		// 12=Furthest Ahead
 		case 13:
 		{
-			if( GetEntPropEnt(victim, Prop_Send, "m_reviveTarget") > 0 )
+			if( g_bLeft4DHooks && L4D_GetHighestFlowSurvivor() == victim )
 			{
 				newVictim = victim;
 
 				#if DEBUG_BENCHMARK == 3
-				PrintToServer("Break order 12");
+				PrintToServer("Break order 13");
 				#endif
+			}
+		}
+
+		// 14=Healing critical
+		case 14:
+		{
+			if( GetEntPropEnt(victim, Prop_Send, "m_useActionTarget") == victim && GetEntProp(victim, Prop_Send, "m_iCurrentUseAction") == 1 )
+			{
+				int health = RoundFloat(GetClientHealth(victim) + GetTempHealth(victim));
+				if( health < g_fCvarLimp )
+				{
+					newVictim = victim;
+
+					#if DEBUG_BENCHMARK == 3
+					PrintToServer("Break order 14");
+					#endif
+				}
 			}
 		}
 	}
