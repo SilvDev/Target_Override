@@ -18,7 +18,7 @@
 
 
 
-#define PLUGIN_VERSION 		"2.20"
+#define PLUGIN_VERSION 		"2.21"
 #define DEBUG_BENCHMARK		0			// 0=Off. 1=Benchmark only (for command). 2=Benchmark (displays on server). 3=PrintToServer various data.
 
 /*======================================================================================
@@ -32,6 +32,21 @@
 
 ========================================================================================
 	Change Log:
+
+2.21 (08-Oct-2022)
+	- Added option "15" to target the Survivor furthest behind in flow distance. Requested by "gabuch2"
+	- Added option "16" to target a Survivor with their flashlight on. Requested by "gabuch2"
+	- Added option "17" to target a Survivor who is running (not crouched or walking). Requested by "gabuch2"
+
+	- Added new include file for 3rd party plugins to use the forward and natives.
+	- Added natives "L4D_TargetOverride_GetOption" and "L4D_TargetOverride_SetOption" for 3rd party plugins to get or set some option values. Requested by "morzlee".
+	- Added native "L4D_TargetOverride_GetValue" for 3rd party plugins to get or set client values. Requested by "morzlee".
+	- Added forward "L4D_OnTargetOverride" for 3rd party plugins to trigger every frame or whenever someone is being targeted. Requested by "morzlee".
+	- Added cvar "l4d_target_override_forward" to enable or disabled the forward. Disabled by default to save CPU cycles.
+
+	- Changed "targeted" option to use the set value as a maximum number of Special Infected allowed to target someone. Requested by "morzlee".
+	- Fixed option "14" not working in L4D1. Thanks to "axelnieves2012" for fixing.
+	- Increased string buffer and maximum orders in case all options are used in a single "order" data key value string.
 
 2.20 (03-Oct-2022)
 	- Added option "14" to target someone healing whose health is below "survivor_limp_health" cvar value. Added by "axelnieves2012".
@@ -181,6 +196,7 @@
 #include <sdkhooks>
 #include <sdktools>
 #include <dhooks>
+#include <l4d_target_override>
 // #include <left4dhooks>
 
 // Left4DHooks natives - optional - (added here to avoid requiring Left4DHooks include)
@@ -205,11 +221,11 @@ float g_iBenchTicks;
 #define GAMEDATA			"l4d_target_override"
 #define CONFIG_DATA			"data/l4d_target_override.cfg"
 
-ConVar g_hCvarAllow, g_hCvarMPGameMode, g_hCvarModes, g_hCvarModesOff, g_hCvarModesTog, g_hCvarSpecials, g_hCvarTeam, g_hCvarType, g_hDecayDecay, g_hCvarLimp;
-bool g_bCvarAllow, g_bMapStarted, g_bLateLoad, g_bLeft4Dead2, g_bLeft4DHooks;
+ConVar g_hCvarAllow, g_hCvarMPGameMode, g_hCvarModes, g_hCvarModesOff, g_hCvarModesTog, g_hCvarForward, g_hCvarSpecials, g_hCvarTeam, g_hCvarType, g_hDecayDecay, g_hCvarLimp;
+bool g_bCvarAllow, g_bMapStarted, g_bLateLoad, g_bLeft4Dead2, g_bLeft4DHooks, g_bCvarForward;
 int g_iCvarSpecials, g_iCvarTeam, g_iCvarType;
 float g_fDecayDecay, g_fCvarLimp;
-Handle g_hDetour;
+Handle g_hDetour, g_hForward;
 
 ArrayList g_BytesSaved;
 Address g_iFixOffset;
@@ -217,7 +233,8 @@ int g_iFixCount, g_iFixMatch;
 
 
 
-#define MAX_ORDERS		12
+#define MAX_BUFFER		48		// Maximum buffer size when exploding the "order" string "0,0,0"
+#define MAX_ORDERS		17		// Maximum number of "order"'s
 int g_iOrderTank[MAX_ORDERS];
 int g_iOrderSmoker[MAX_ORDERS];
 int g_iOrderBoomer[MAX_ORDERS];
@@ -257,6 +274,13 @@ bool g_bCheckpoint[MAX_PLAY];
 
 enum
 {
+	INDEX_TARG_DIST,
+	INDEX_TARG_VIC,
+	INDEX_TARG_TEAM
+}
+
+enum
+{
 	INDEX_TANK		= 0,
 	INDEX_SMOKER	= 1,
 	INDEX_BOOMER	= 2,
@@ -264,13 +288,6 @@ enum
 	INDEX_SPITTER	= 4,
 	INDEX_JOCKEY	= 5,
 	INDEX_CHARGER	= 6
-}
-
-enum
-{
-	INDEX_TARG_DIST,
-	INDEX_TARG_VIC,
-	INDEX_TARG_TEAM
 }
 
 
@@ -303,6 +320,14 @@ public APLRes AskPluginLoad2(Handle myself, bool late, char[] error, int err_max
 	MarkNativeAsOptional("L4D2Direct_GetTerrorNavArea");
 	MarkNativeAsOptional("L4D2Direct_GetTerrorNavAreaFlow");
 	MarkNativeAsOptional("L4D_GetHighestFlowSurvivor");
+
+	CreateNative("L4D_TargetOverride_GetValue", Native_GetValue);
+	CreateNative("L4D_TargetOverride_GetOption", Native_GetOption);
+	CreateNative("L4D_TargetOverride_SetOption", Native_SetOption);
+
+	g_hForward = CreateGlobalForward("L4D_OnTargetOverride", ET_Hook, Param_Cell, Param_CellByRef, Param_Cell);
+
+	RegPluginLibrary("l4d_target_override");
 
 	g_bLateLoad = late;
 	return APLRes_Success;
@@ -388,11 +413,12 @@ public void OnPluginStart()
 	g_hCvarModes =			CreateConVar(	"l4d_target_override_modes",			"",					"Turn on the plugin in these game modes, separate by commas (no spaces). (Empty = all).", CVAR_FLAGS );
 	g_hCvarModesOff =		CreateConVar(	"l4d_target_override_modes_off",		"",					"Turn off the plugin in these game modes, separate by commas (no spaces). (Empty = none).", CVAR_FLAGS );
 	g_hCvarModesTog =		CreateConVar(	"l4d_target_override_modes_tog",		"0",				"Turn on the plugin in these game modes. 0=All, 1=Coop, 2=Survival, 4=Versus, 8=Scavenge. Add numbers together.", CVAR_FLAGS );
+	g_hCvarForward =		CreateConVar(	"l4d_target_override_forward",			"0",				"0=Off. 1=On. Forward used for 3rd party plugins when someone is being targeted, triggers every frame or so.", CVAR_FLAGS );
 	if( g_bLeft4Dead2 )
 		g_hCvarSpecials =	CreateConVar(	"l4d_target_override_specials",			"127",				"Override these Specials target function: 1=Smoker, 2=Boomer, 4=Hunter, 8=Spitter, 16=Jockey, 32=Charger, 64=Tank. 127=All. Add numbers together.", CVAR_FLAGS );
 	else
 		g_hCvarSpecials =	CreateConVar(	"l4d_target_override_specials",			"15",				"Override these Specials target function: 1=Smoker, 2=Boomer, 4=Hunter, 8=Tank. 15=All. Add numbers together.", CVAR_FLAGS );
-	g_hCvarTeam =			CreateConVar(	"l4d_target_override_team",				"2",				"Which Survivor teams should be targeted. 2=Default Survivors. 4=Holding and Passing bots. 6=Both.", CVAR_FLAGS );
+	g_hCvarTeam =			CreateConVar(	"l4d_target_override_team",				"2",				"Which Survivor teams should be targeted. 2=Default Survivors. 4=Holdout and Passing bots. 6=Both.", CVAR_FLAGS );
 	g_hCvarType =			CreateConVar(	"l4d_target_override_type",				"1",				"How should the plugin search through Survivors. 1=Nearest visible (defaults to games method on fail). 2=All Survivors from the nearest. 3=Nearest by flow distance (requires Left4DHooks plugin, defaults to type 2).", CVAR_FLAGS );
 	CreateConVar(							"l4d_target_override_version",			PLUGIN_VERSION,		"Target Override plugin version.", FCVAR_NOTIFY|FCVAR_DONTRECORD);
 	AutoExecConfig(true,					"l4d_target_override");
@@ -405,6 +431,7 @@ public void OnPluginStart()
 	g_hCvarModesOff.AddChangeHook(ConVarChanged_Allow);
 	g_hCvarModesTog.AddChangeHook(ConVarChanged_Allow);
 	g_hCvarAllow.AddChangeHook(ConVarChanged_Allow);
+	g_hCvarForward.AddChangeHook(ConVarChanged_Cvars);
 	g_hCvarSpecials.AddChangeHook(ConVarChanged_Cvars);
 	g_hCvarTeam.AddChangeHook(ConVarChanged_Cvars);
 	g_hCvarType.AddChangeHook(ConVarChanged_Cvars);
@@ -517,10 +544,10 @@ void ExplodeToArray(char[] key, KeyValues hFile, int index, int arr[MAX_ORDERS])
 {
 	if( hFile.JumpToKey(key) )
 	{
-		char buffer[32];
+		char buffer[MAX_BUFFER];
 		char buffers[MAX_ORDERS][3];
 
-		hFile.GetString("order", buffer, sizeof(buffer), "0,0,0,0,0,0,0,0,0,0,0,0,0");
+		hFile.GetString("order", buffer, sizeof(buffer), "0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0");
 		ExplodeString(buffer, ",", buffers, MAX_ORDERS, sizeof(buffers[]));
 
 		for( int i = 0; i < MAX_ORDERS; i++ )
@@ -532,11 +559,11 @@ void ExplodeToArray(char[] key, KeyValues hFile, int index, int arr[MAX_ORDERS])
 		g_iOptionIncap[index] = hFile.GetNum("incap");
 		g_iOptionVoms[index] = hFile.GetNum("voms");
 		g_iOptionVoms2[index] = hFile.GetNum("voms2");
-		g_fOptionDist[index] = hFile.GetFloat("dist");
-		g_fOptionLast[index] = hFile.GetFloat("time");
 		g_fOptionRange[index] = hFile.GetFloat("range");
+		g_fOptionDist[index] = hFile.GetFloat("dist");
 		g_fOptionWait[index] = hFile.GetFloat("wait");
 		g_iOptionLast[index] = hFile.GetNum("last");
+		g_fOptionLast[index] = hFile.GetFloat("time");
 		g_iOptionSafe[index] = hFile.GetNum("safe");
 		g_iOptionTarg[index] = hFile.GetNum("targeted");
 		hFile.Rewind();
@@ -567,6 +594,7 @@ void GetCvars()
 {
 	g_fDecayDecay =		g_hDecayDecay.FloatValue;
 	g_fCvarLimp =		g_hCvarLimp.FloatValue;
+	g_bCvarForward =	g_hCvarForward.BoolValue;
 	g_iCvarSpecials =	g_hCvarSpecials.IntValue;
 	g_iCvarTeam =		g_hCvarTeam.IntValue;
 	g_iCvarType =		g_hCvarType.IntValue;
@@ -583,6 +611,7 @@ void IsAllowed()
 		HookPlayerHurt(true);
 
 		HookEvent("player_spawn",						Event_PlayerSpawn);
+		HookEvent("player_death",						Event_PlayerDeath);
 		HookEvent("round_start",						Event_RoundStart);
 		HookEvent("revive_success",						Event_ReviveSuccess);	// Revived
 		HookEvent("player_incapacitated",				Event_Incapacitated);
@@ -617,6 +646,7 @@ void IsAllowed()
 		HookPlayerHurt(false);
 
 		UnhookEvent("player_spawn",						Event_PlayerSpawn);
+		UnhookEvent("player_death",						Event_PlayerDeath);
 		UnhookEvent("round_start",						Event_RoundStart);
 		UnhookEvent("revive_success",					Event_ReviveSuccess);	// Revived
 		UnhookEvent("player_incapacitated",				Event_Incapacitated);
@@ -805,6 +835,24 @@ void Event_PlayerSpawn(Event event, const char[] name, bool dontBroadcast)
 {
 	int client = GetClientOfUserId(event.GetInt("userid"));
 	ResetVars(client);
+}
+
+void Event_PlayerDeath(Event event, const char[] name, bool dontBroadcast)
+{
+	int client = GetClientOfUserId(event.GetInt("userid"));
+
+	g_iLastVictim[client] = 0;
+
+	if( client )
+	{
+		for( int i = 1; i <= MaxClients; i++ )
+		{
+			if( g_iLastVictim[i] == client )
+			{
+				g_iLastVictim[i] = 0;
+			}
+		}
+	}
 }
 
 void Event_PlayerHurt(Event event, const char[] name, bool dontBroadcast)
@@ -1049,6 +1097,9 @@ MRESReturn ChooseVictim(int attacker, Handle hReturn)
 			#endif
 
 			// CONTINUE OVERRIDE LAST
+			Action aResult = SendForward(attacker, newVictim, g_iLastOrders[attacker]);
+			if( aResult == Plugin_Handled ) return MRES_Ignored;
+
 			DHookSetReturn(hReturn, newVictim);
 			return MRES_Supercede;
 		}
@@ -1070,6 +1121,9 @@ MRESReturn ChooseVictim(int attacker, Handle hReturn)
 					g_fLastSwitch[attacker] = GetGameTime() + g_fOptionWait[class];
 
 					// CONTINUE OVERRIDE LAST
+					Action aResult = SendForward(attacker, newVictim, g_iLastOrders[attacker]);
+					if( aResult == Plugin_Handled ) return MRES_Ignored;
+
 					DHookSetReturn(hReturn, newVictim);
 					return MRES_Supercede;
 				}
@@ -1146,6 +1200,7 @@ MRESReturn ChooseVictim(int attacker, Handle hReturn)
 	float flow;
 	int team;
 	int index;
+	int total;
 	int victim;
 
 	// Check range by nav flow
@@ -1192,24 +1247,32 @@ MRESReturn ChooseVictim(int attacker, Handle hReturn)
 					// Already targeted test
 					if( g_iOptionTarg[class] )
 					{
+						total = 0;
+
 						for( int x = 1; x <= MaxClients; x++ )
 						{
 							if( x != attacker && g_iLastVictim[x] == victim )
 							{
-								#if DEBUG_BENCHMARK == 3
 								if( IsClientInGame(x) )
 								{
-									PrintToServer("%N is ignoring %N already targeted by %N", attacker, victim, x);
-								}
-								#endif
+									total++;
+									if( total >= g_iOptionTarg[class] )
+									{
+										#if DEBUG_BENCHMARK == 3
+										if( IsClientInGame(x) )
+										{
+											PrintToServer("%N is ignoring %N already targeted by %N", attacker, victim, x);
+										}
+										#endif
 
-								if( IsClientInGame(x) )
+										victim = 0;
+										break;
+									}
+								}
+								else
 								{
-									victim = 0;
-									break;
+									g_iLastVictim[x] = 0;
 								}
-
-								g_iLastVictim[x] = 0;
 							}
 						}
 
@@ -1347,6 +1410,11 @@ MRESReturn ChooseVictim(int attacker, Handle hReturn)
 
 
 
+		// No order
+		if( order == 0 ) continue;
+
+
+
 		// Last Attacker enabled?
 		if( order == 7 && g_iOptionLast[class] == 0 ) continue;
 
@@ -1464,6 +1532,9 @@ MRESReturn ChooseVictim(int attacker, Handle hReturn)
 	// =========================
 	if( newVictim )
 	{
+		Action aResult = SendForward(attacker, newVictim, g_iLastOrders[attacker]);
+		if( aResult == Plugin_Handled ) return MRES_Ignored;
+
 		DHookSetReturn(hReturn, newVictim);
 
 		#if DEBUG_BENCHMARK == 1 || DEBUG_BENCHMARK == 2
@@ -1721,7 +1792,7 @@ int OrderTest(int attacker, int victim, int team, int class, int order)
 			}
 		}
 
-		// 12=Furthest Ahead
+		// 13=Furthest Ahead
 		case 13:
 		{
 			if( g_bLeft4DHooks && L4D_GetHighestFlowSurvivor() == victim )
@@ -1737,7 +1808,7 @@ int OrderTest(int attacker, int victim, int team, int class, int order)
 		// 14=Healing critical
 		case 14:
 		{
-			if( GetEntPropEnt(victim, Prop_Send, "m_useActionTarget") == victim && GetEntProp(victim, Prop_Send, "m_iCurrentUseAction") == 1 )
+			if( (g_bLeft4Dead2 && GetEntPropEnt(victim, Prop_Send, "m_useActionTarget") == victim && GetEntProp(victim, Prop_Send, "m_iCurrentUseAction") == 1) || (!g_bLeft4Dead2 && GetEntPropEnt(victim, Prop_Send, "m_healTarget") == victim) )
 			{
 				int health = RoundFloat(GetClientHealth(victim) + GetTempHealth(victim));
 				if( health < g_fCvarLimp )
@@ -1748,6 +1819,66 @@ int OrderTest(int attacker, int victim, int team, int class, int order)
 					PrintToServer("Break order 14");
 					#endif
 				}
+			}
+		}
+
+		// 15=Furthest Ahead
+		case 15:
+		{
+			if( g_bLeft4DHooks )
+			{
+				float flow;
+				float last = 99999.9;
+				int target;
+
+				for( int i = 1; i <= MaxClients; i++ )
+				{
+					if( IsClientInGame(i) && ValidateTeam(i) == 2 && IsPlayerAlive(i) )
+					{
+						flow = L4D2Direct_GetFlowDistance(i);
+						if( flow < last )
+						{
+							last = flow;
+							target = i;
+						}
+					}
+				}
+
+				if( target == victim )
+				{
+					newVictim = victim;
+
+					#if DEBUG_BENCHMARK == 3
+					PrintToServer("Break order 15");
+					#endif
+				}
+			}
+		}
+
+		// 16=Flashlight on
+		case 16:
+		{
+			if( GetEntProp(victim, Prop_Send, "m_fEffects") & 4 )
+			{
+				newVictim = victim;
+
+				#if DEBUG_BENCHMARK == 3
+				PrintToServer("Break order 16");
+				#endif
+			}
+		}
+
+		// 17=Running
+		case 17:
+		{
+			int buttons = GetClientButtons(victim);
+			if( !(buttons & IN_SPEED) && !(buttons & IN_DUCK) && (buttons & IN_FORWARD || buttons & IN_BACK || buttons & IN_MOVELEFT || buttons & IN_MOVERIGHT) )
+			{
+				newVictim = victim;
+
+				#if DEBUG_BENCHMARK == 3
+				PrintToServer("Break order 17");
+				#endif
 			}
 		}
 	}
@@ -1761,6 +1892,116 @@ int OrderTest(int attacker, int victim, int team, int class, int order)
 	return newVictim;
 }
 
+
+
+// ====================================================================================================
+//					NATIVES AND FORWARDS
+// ====================================================================================================
+any Native_GetValue(Handle plugin, int numParams)
+{
+	int client = GetNativeCell(1);
+	int option = GetNativeCell(2);
+
+	switch( view_as<VALUE_OPTION_INDEX>(option) )
+	{
+		case VALUE_INDEX_VICTIM:		return g_iLastVictim[client];
+		case VALUE_INDEX_SWITCH:		return g_fLastSwitch[client];
+		case VALUE_INDEX_ATTACK:		return g_fLastAttack[client];
+		case VALUE_INDEX_ATTACKER:		return g_iLastAttacker[client];
+		case VALUE_INDEX_ORDER:			return g_iLastOrders[client];
+		case VALUE_INDEX_TOTAL:
+		{
+			int total;
+
+			for( int i = 1; i <= MaxClients; i++ )
+			{
+				if( g_iLastVictim[i] == client )
+				{
+					total++;
+				}
+			}
+
+			return total;
+		}
+	}
+
+	return -1;
+}
+
+any Native_GetOption(Handle plugin, int numParams)
+{
+	int index = GetNativeCell(1);
+	int option = GetNativeCell(2);
+
+	switch( view_as<TARGET_OPTION_INDEX>(option) )
+	{
+		case INDEX_PINNED:		return g_iOptionPinned[index];
+		case INDEX_INCAP:		return g_iOptionIncap[index];
+		case INDEX_VOMS:		return g_iOptionVoms[index];
+		case INDEX_VOMS2:		return g_iOptionVoms2[index];
+		case INDEX_RANGE:		return g_fOptionRange[index];
+		case INDEX_DIST:		return g_fOptionDist[index];
+		case INDEX_WAIT:		return g_fOptionWait[index];
+		case INDEX_LAST:		return g_iOptionLast[index];
+		case INDEX_TIME:		return g_fOptionLast[index];
+		case INDEX_SAFE:		return g_iOptionSafe[index];
+		case INDEX_TARGETED:	return g_iOptionTarg[index];
+	}
+
+	return -1;
+}
+
+int Native_SetOption(Handle plugin, int numParams)
+{
+	int index = GetNativeCell(1);
+	int option = GetNativeCell(2);
+	any value = GetNativeCell(3);
+
+	switch( view_as<TARGET_OPTION_INDEX>(option) )
+	{
+		case INDEX_PINNED:		g_iOptionPinned[index] = value;
+		case INDEX_INCAP:		g_iOptionIncap[index] = value;
+		case INDEX_VOMS:		g_iOptionVoms[index] = value;
+		case INDEX_VOMS2:		g_iOptionVoms2[index] = value;
+		case INDEX_RANGE:		g_fOptionRange[index] = value;
+		case INDEX_DIST:		g_fOptionDist[index] = value;
+		case INDEX_WAIT:		g_fOptionWait[index] = value;
+		case INDEX_LAST:		g_iOptionLast[index] = value;
+		case INDEX_TIME:		g_fOptionLast[index] = value;
+		case INDEX_SAFE:		g_iOptionSafe[index] = value;
+		case INDEX_TARGETED:	g_iOptionTarg[index] = value;
+	}
+
+	return 0;
+}
+
+Action SendForward(int attacker, int &victim, int order)
+{
+	if( g_bCvarForward )
+	{
+		int victim2 = victim;
+
+		// Forward
+		Action aResult;
+		Call_StartForward(g_hForward);
+		Call_PushCell(attacker);
+		Call_PushCellRef(victim2);
+		Call_PushCell(order);
+		Call_Finish(aResult);
+
+		if( aResult == Plugin_Changed ) victim = victim2;
+
+		return aResult;
+	}
+
+	return Plugin_Continue;
+}
+
+
+
+// ====================================================================================================
+//					STOCKS
+// ====================================================================================================
 float GetTempHealth(int client)
 {
 	float fHealth = GetEntPropFloat(client, Prop_Send, "m_healthBuffer");
