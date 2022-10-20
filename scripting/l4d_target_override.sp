@@ -18,7 +18,7 @@
 
 
 
-#define PLUGIN_VERSION 		"2.21"
+#define PLUGIN_VERSION 		"2.22"
 #define DEBUG_BENCHMARK		0			// 0=Off. 1=Benchmark only (for command). 2=Benchmark (displays on server). 3=PrintToServer various data.
 
 /*======================================================================================
@@ -32,6 +32,9 @@
 
 ========================================================================================
 	Change Log:
+
+2.22 (20-Oct-2022)
+	- Fixed various issues with the "pinned" option breaking targeting. Thanks to "morzlee" for reporting and lots of help testing.
 
 2.21 (08-Oct-2022)
 	- Added option "15" to target the Survivor furthest behind in flow distance. Requested by "gabuch2"
@@ -1133,6 +1136,7 @@ MRESReturn ChooseVictim(int attacker, Handle hReturn)
 			PrintToServer("=== Test Last: wait reset.");
 			#endif
 
+			newVictim = 0;
 			g_iLastOrders[attacker] = 0;
 			g_iLastVictim[attacker] = 0;
 			g_fLastSwitch[attacker] = 0.0;
@@ -1313,7 +1317,7 @@ MRESReturn ChooseVictim(int attacker, Handle hReturn)
 						dist = GetVectorDistance(vPos, vTarg);
 					}
 
-					if( dist != 999999.0 && (dist < g_fOptionRange[class] || g_fOptionRange[class] == 0.0) )
+					if( dist != 999999.0 && (g_fOptionRange[class] == 0.0 || dist < g_fOptionRange[class]) )
 					{
 						index = aTargets.Push(dist);
 						aTargets.Set(index, victim, INDEX_TARG_VIC);
@@ -1351,23 +1355,52 @@ MRESReturn ChooseVictim(int attacker, Handle hReturn)
 
 
 	// =========================
-	// ALL INCAPPED CHECK
-	// OPTION: "incap" "3"
+	// OPTION "incap" CHECK and OPTION: "pinned"
 	// =========================
-	// 3=Only attack incapacitated when everyone is incapacitated.
+	bool allPinned;
 	bool allIncap;
+
 	if( g_iOptionIncap[class] == 3 )
-	{
 		allIncap = true;
 
+	if( g_iOptionPinned[class] )
+		allPinned = true;
+
+	if( allIncap || allPinned )
+	{
 		for( int i = 1; i <= MaxClients; i++ )
 		{
 			if( IsClientInGame(i) && ValidateTeam(i) == 2 && IsPlayerAlive(i) )
 			{
-				if( g_bIncapped[i] == false )
+				// =========================
+				// ALL INCAPPED CHECK
+				// OPTION: "incap" "3"
+				// =========================
+				// 3=Only attack incapacitated when everyone is incapacitated.
+				if( allIncap && g_bIncapped[i] == false )
 				{
 					allIncap = false;
-					break;
+				}
+
+
+
+				// =========================
+				// ALL PINNED CHECK
+				// OPTION: "pinned"
+				// =========================
+				// Validate pinned and allowed
+				// 1=Smoker. 2=Hunter. 4=Jockey. 8=Charger.
+				if( allPinned )
+				{
+					if( g_iOptionPinned[class] & 1 && g_bPinSmoker[i] ) continue;
+					if( g_iOptionPinned[class] & 2 && g_bPinHunter[i] ) continue;
+					if( g_bLeft4Dead2 )
+					{
+						if( g_iOptionPinned[class] & 4 && g_bPinJockey[i] ) continue;
+						if( g_iOptionPinned[class] & 8 && g_bPinCharger[i] ) continue;
+					}
+
+					allPinned = false;
 				}
 			}
 		}
@@ -1379,10 +1412,9 @@ MRESReturn ChooseVictim(int attacker, Handle hReturn)
 	// ORDER VALIDATION
 	// =========================
 	// Loop through all orders progressing to the next on fail, and each time loop through all survivors from nearest to test the order preference
-	bool allPinned = true;
 	int order;
-
 	int orders;
+
 	for( ; orders < MAX_ORDERS; orders++ )
 	{
 		// Found someone last order loop, exit loop
@@ -1469,19 +1501,78 @@ MRESReturn ChooseVictim(int attacker, Handle hReturn)
 			// =========================
 			// OPTION: "pinned"
 			// =========================
-			// Validate pinned and allowed
-			// 1=Smoker. 2=Hunter. 4=Jockey. 8=Charger.
-			if( team == 2 )
+			if( g_iOptionPinned[class] )
 			{
-				if( g_iOptionPinned[class] & 1 && g_bPinSmoker[victim] ) continue;
-				if( g_iOptionPinned[class] & 2 && g_bPinHunter[victim] ) continue;
-				if( g_bLeft4Dead2 )
+				if( g_iOptionPinned[class] & 1 && g_bPinSmoker[victim] )
 				{
-					if( g_iOptionPinned[class] & 4 && g_bPinJockey[victim] ) continue;
-					if( g_iOptionPinned[class] & 8 && g_bPinCharger[victim] ) continue;
+					if( GetEntPropEnt(victim, Prop_Send, "m_tongueOwner") == -1 )
+					{
+						allPinned = false;
+						g_bPinSmoker[victim] = false;
+					}
+					else
+					{
+						#if DEBUG_BENCHMARK == 3
+						PrintToServer("Ignoring pinned %d %N by Smoker", victim, victim);
+						#endif
+
+						continue;
+					}
 				}
 
-				allPinned = false;
+				if( g_iOptionPinned[class] & 2 && g_bPinHunter[victim] )
+				{
+					if( GetEntPropEnt(victim, Prop_Send, "m_pounceAttacker") == -1 )
+					{
+						allPinned = false;
+						g_bPinHunter[victim] = false;
+					}
+					else
+					{
+						#if DEBUG_BENCHMARK == 3
+						PrintToServer("Ignoring pinned %d %N by Hunter", victim, victim);
+						#endif
+
+						continue;
+					}
+				}
+
+				if( g_bLeft4Dead2 )
+				{
+					if( g_iOptionPinned[class] & 4 && g_bPinJockey[victim] )
+					{
+						if( GetEntPropEnt(victim, Prop_Send, "m_jockeyAttacker") == -1 )
+						{
+							allPinned = false;
+							g_bPinJockey[victim] = false;
+						}
+						else
+						{
+							#if DEBUG_BENCHMARK == 3
+							PrintToServer("Ignoring pinned %d %N by Jockey", victim, victim);
+							#endif
+
+							continue;
+						}
+					}
+
+					if( g_iOptionPinned[class] & 8 && g_bPinCharger[victim] )
+					{
+						if( GetEntPropEnt(victim, Prop_Send, "m_carryAttacker") == -1  || GetEntPropEnt(victim, Prop_Send, "m_pummelAttacker") == -1 )
+						{
+							allPinned = false;
+							g_bPinCharger[victim] = false;
+						}
+						else
+						{
+							#if DEBUG_BENCHMARK == 3
+							PrintToServer("Ignoring pinned %d %N by Charger", victim, victim);
+							#endif
+
+							continue;
+						}
+					}
+				}
 			}
 
 
@@ -1504,9 +1595,77 @@ MRESReturn ChooseVictim(int attacker, Handle hReturn)
 
 
 	// All pinned and not allowed to target, target self to avoid attacking pinned.
-	if( allPinned && g_iOptionPinned[class] == 0 )
+	if( allPinned )
 	{
-		newVictim = attacker;
+		if( g_iOptionPinned[class] )
+		{
+			// Verify actually pinned, seems an issue with events not resetting, maybe caused by a plugin?
+			for( int i = 1; i <= MaxClients; i++ )
+			{
+				if( IsClientInGame(i) && ValidateTeam(i) == 2 && IsPlayerAlive(i) )
+				{
+					if( g_iOptionPinned[class] & 1 && g_bPinSmoker[i] )
+					{
+						if( GetEntPropEnt(i, Prop_Send, "m_tongueOwner") == -1 )
+						{
+							allPinned = false;
+							g_bPinSmoker[i] = false;
+							break;
+						}
+
+						continue;
+					}
+
+					if( g_iOptionPinned[class] & 2 && g_bPinHunter[i] )
+					{
+						if( GetEntPropEnt(i, Prop_Send, "m_pounceAttacker") == -1 )
+						{
+							allPinned = false;
+							g_bPinHunter[i] = false;
+							break;
+						}
+
+						continue;
+					}
+
+					if( g_bLeft4Dead2 )
+					{
+						if( g_iOptionPinned[class] & 4 && g_bPinJockey[i] )
+						{
+							if( GetEntPropEnt(i, Prop_Send, "m_jockeyAttacker") == -1 )
+							{
+								allPinned = false;
+								g_bPinJockey[i] = false;
+								break;
+							}
+
+							continue;
+						}
+
+						if( g_iOptionPinned[class] & 8 && g_bPinCharger[i] )
+						{
+							if( GetEntPropEnt(i, Prop_Send, "m_carryAttacker") == -1  || GetEntPropEnt(i, Prop_Send, "m_pummelAttacker") == -1 )
+							{
+								allPinned = false;
+								g_bPinCharger[i] = false;
+								break;
+							}
+
+							continue;
+						}
+					}
+				}
+			}
+		}
+
+		if( allPinned )
+		{
+			#if DEBUG_BENCHMARK == 3
+			PrintToServer("All pinned, selecting self: %d (%N)", attacker, attacker);
+			#endif
+
+			newVictim = attacker;
+		}
 	}
 
 
