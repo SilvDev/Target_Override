@@ -18,7 +18,7 @@
 
 
 
-#define PLUGIN_VERSION 		"2.22"
+#define PLUGIN_VERSION 		"2.23"
 #define DEBUG_BENCHMARK		0			// 0=Off. 1=Benchmark only (for command). 2=Benchmark (displays on server). 3=PrintToServer various data.
 
 /*======================================================================================
@@ -32,6 +32,11 @@
 
 ========================================================================================
 	Change Log:
+
+2.23 (28-Oct-2022)
+	- Fixed Special Infected not being able to target other SI. Tank vs SI is still not capable. Thanks to "Tonblader" for reporting.
+	- Fixed the "voms" and "voms2" options not working correctly.
+	- Plugin now prevents the Tank attempting to attack vomited Special Infected, since the Tank will just stand there.
 
 2.22 (20-Oct-2022)
 	- Fixed various issues with the "pinned" option breaking targeting. Thanks to "morzlee" for reporting and lots of help testing.
@@ -200,7 +205,6 @@
 #include <sdktools>
 #include <dhooks>
 #include <l4d_target_override>
-// #include <left4dhooks>
 
 // Left4DHooks natives - optional - (added here to avoid requiring Left4DHooks include)
 native float L4D2Direct_GetFlowDistance(int client);
@@ -226,7 +230,7 @@ float g_iBenchTicks;
 
 ConVar g_hCvarAllow, g_hCvarMPGameMode, g_hCvarModes, g_hCvarModesOff, g_hCvarModesTog, g_hCvarForward, g_hCvarSpecials, g_hCvarTeam, g_hCvarType, g_hDecayDecay, g_hCvarLimp;
 bool g_bCvarAllow, g_bMapStarted, g_bLateLoad, g_bLeft4Dead2, g_bLeft4DHooks, g_bCvarForward;
-int g_iCvarSpecials, g_iCvarTeam, g_iCvarType;
+int g_iCvarSpecials, g_iCvarTeam, g_iCvarType, g_iClassTank;
 float g_fDecayDecay, g_fCvarLimp;
 Handle g_hDetour, g_hForward;
 
@@ -359,6 +363,8 @@ public void OnAllPluginsLoaded()
 
 public void OnPluginStart()
 {
+	g_iClassTank = g_bLeft4Dead2 ? 8 : 5;
+
 	// =========================
 	// GAMEDATA
 	// =========================
@@ -377,23 +383,23 @@ public void OnPluginStart()
 
 
 	// =========================
-	// PATCH
+	// PATCH - Remove ignoring players using mini gun
 	// =========================
 	if( g_bLeft4Dead2 )
 	{
 		g_iFixOffset = GameConfGetAddress(hGameData, "TankAttack::Update");
-		if( !g_iFixOffset ) SetFailState("Failed to find \"TankAttack::Update\" signature.", GAMEDATA);
+		if( !g_iFixOffset ) SetFailState("Failed to find \"TankAttack::Update\" signature.");
 
 		int offs = GameConfGetOffset(hGameData, "TankAttack__Update_Offset");
-		if( offs == -1 ) SetFailState("Failed to load \"TankAttack__Update_Offset\" offset.", GAMEDATA);
+		if( offs == -1 ) SetFailState("Failed to load \"TankAttack__Update_Offset\" offset.");
 
 		g_iFixOffset += view_as<Address>(offs);
 
 		g_iFixCount = GameConfGetOffset(hGameData, "TankAttack__Update_Count");
-		if( g_iFixCount == -1 ) SetFailState("Failed to load \"TankAttack__Update_Count\" offset.", GAMEDATA);
+		if( g_iFixCount == -1 ) SetFailState("Failed to load \"TankAttack__Update_Count\" offset.");
 
 		g_iFixMatch = GameConfGetOffset(hGameData, "TankAttack__Update_Match");
-		if( g_iFixMatch == -1 ) SetFailState("Failed to load \"TankAttack__Update_Match\" offset.", GAMEDATA);
+		if( g_iFixMatch == -1 ) SetFailState("Failed to load \"TankAttack__Update_Match\" offset.");
 
 		g_BytesSaved = new ArrayList();
 
@@ -1021,7 +1027,7 @@ MRESReturn ChooseVictim(int attacker, Handle hReturn)
 	#if DEBUG_BENCHMARK == 3
 	PrintToServer("");
 	PrintToServer("");
-	PrintToServer("CHOOSER %d (%N)", attacker, attacker);
+	PrintToServer("CHOOSER {%d - \"%N\"}", attacker, attacker);
 	#endif
 
 
@@ -1031,7 +1037,7 @@ MRESReturn ChooseVictim(int attacker, Handle hReturn)
 	// =========================
 	// 1=Smoker, 2=Boomer, 3=Hunter, 4=Spitter, 5=Jockey, 6=Charger, 5 (L4D1) / 8 (L4D2)=Tank
 	int class = GetEntProp(attacker, Prop_Send, "m_zombieClass");
-	if( class == (g_bLeft4Dead2 ? 8 : 5) ) class -= 1;
+	if( class == g_iClassTank ) class -= 1;
 	if( g_iCvarSpecials & (1 << class - 1) == 0 )
 	{
 		#if DEBUG_BENCHMARK == 1 || DEBUG_BENCHMARK == 2
@@ -1051,7 +1057,7 @@ MRESReturn ChooseVictim(int attacker, Handle hReturn)
 	}
 
 	// Change tank class for use as index
-	if( class == (g_bLeft4Dead2 ? 7 : 4) )
+	if( class == g_iClassTank - 1 )
 	{
 		class = 0;
 	}
@@ -1069,13 +1075,13 @@ MRESReturn ChooseVictim(int attacker, Handle hReturn)
 		if( IsClientInGame(lastVictim) && IsPlayerAlive(lastVictim) )
 		{
 			#if DEBUG_BENCHMARK == 3
-			PrintToServer("=== Test Last: Order: %d. newVictim %d (%N)", g_iLastOrders[attacker], lastVictim, lastVictim);
+			PrintToServer("=== Test Last: Order: %d. newVictim {%d - \"%N\"}", g_iLastOrders[attacker], lastVictim, lastVictim);
 			#endif
 
 			newVictim = OrderTest(attacker, lastVictim, ValidateTeam(lastVictim), class, g_iLastOrders[attacker]);
 
 			#if DEBUG_BENCHMARK == 3
-			PrintToServer("=== Test Last: newVictim %d (%N)", lastVictim, lastVictim);
+			PrintToServer("=== Test Last: newVictim {%d - \"%N\"}", lastVictim, lastVictim);
 			#endif
 		}
 
@@ -1167,7 +1173,7 @@ MRESReturn ChooseVictim(int attacker, Handle hReturn)
 			GetClientAbsOrigin(attacker, vPos);
 			for( int i = 1; i <= MaxClients; i++ )
 			{
-				if( IsClientInGame(i) && ValidateTeam(i) == 2 && IsPlayerAlive(i) )
+				if( attacker != i && IsClientInGame(i) && IsPlayerAlive(i) )
 				{
 					targets[numClients++] = i;
 				}
@@ -1242,8 +1248,8 @@ MRESReturn ChooseVictim(int attacker, Handle hReturn)
 			team = ValidateTeam(victim);
 			// Option "voms2" then allow attacking vomited survivors ELSE not vomited
 			// Option "voms" then allow choosing team 3 when vomited
-			if( (team == 2 && (g_iOptionVoms2[class] == 1 || g_bPinBoomer[i] == false) ) ||
-				(team == 3 && g_iOptionVoms[class] == 1 && g_bPinBoomer[i] == true) )
+			if( (team == 2 && (g_iOptionVoms2[class] == 1 || g_bPinBoomer[victim] == false) ) ||
+				(team == 3 && g_iOptionVoms[class] == 1 && g_bPinBoomer[victim] == true) )
 			{
 				// Saferoom test
 				if( !g_iOptionSafe[class] || !g_bCheckpoint[victim] )
@@ -1265,7 +1271,7 @@ MRESReturn ChooseVictim(int attacker, Handle hReturn)
 										#if DEBUG_BENCHMARK == 3
 										if( IsClientInGame(x) )
 										{
-											PrintToServer("%N is ignoring %N already targeted by %N", attacker, victim, x);
+											PrintToServer("{\"%N\"} is ignoring {\"%N\"} already targeted by {\"%N\"}", attacker, victim, x);
 										}
 										#endif
 
@@ -1419,7 +1425,7 @@ MRESReturn ChooseVictim(int attacker, Handle hReturn)
 	{
 		// Found someone last order loop, exit loop
 		#if DEBUG_BENCHMARK == 3
-		PrintToServer("=== ORDER LOOP %d. newVictim %d (%N)", orders + 1, newVictim, newVictim);
+		PrintToServer("=== ORDER LOOP %d. newVictim {%d - \"%N\"}", orders + 1, newVictim, newVictim);
 		#endif
 
 		if( newVictim ) break;
@@ -1513,7 +1519,7 @@ MRESReturn ChooseVictim(int attacker, Handle hReturn)
 					else
 					{
 						#if DEBUG_BENCHMARK == 3
-						PrintToServer("Ignoring pinned %d %N by Smoker", victim, victim);
+						PrintToServer("Ignoring pinned {%d - \"%N\"} by Smoker", victim, victim);
 						#endif
 
 						continue;
@@ -1530,7 +1536,7 @@ MRESReturn ChooseVictim(int attacker, Handle hReturn)
 					else
 					{
 						#if DEBUG_BENCHMARK == 3
-						PrintToServer("Ignoring pinned %d %N by Hunter", victim, victim);
+						PrintToServer("Ignoring pinned {%d - \"%N\"} by Hunter", victim, victim);
 						#endif
 
 						continue;
@@ -1549,7 +1555,7 @@ MRESReturn ChooseVictim(int attacker, Handle hReturn)
 						else
 						{
 							#if DEBUG_BENCHMARK == 3
-							PrintToServer("Ignoring pinned %d %N by Jockey", victim, victim);
+							PrintToServer("Ignoring pinned {%d - \"%N\"} by Jockey", victim, victim);
 							#endif
 
 							continue;
@@ -1566,7 +1572,7 @@ MRESReturn ChooseVictim(int attacker, Handle hReturn)
 						else
 						{
 							#if DEBUG_BENCHMARK == 3
-							PrintToServer("Ignoring pinned %d %N by Charger", victim, victim);
+							PrintToServer("Ignoring pinned {%d - \"%N\"} by Charger", victim, victim);
 							#endif
 
 							continue;
@@ -1583,7 +1589,7 @@ MRESReturn ChooseVictim(int attacker, Handle hReturn)
 			newVictim = OrderTest(attacker, victim, team, class, order);
 
 			#if DEBUG_BENCHMARK == 3
-			PrintToServer("Order %d newVictim %d (%N)", order, newVictim, newVictim);
+			PrintToServer("Order %d newVictim {%d - \"%N\"}", order, newVictim, newVictim);
 			#endif
 
 			if( newVictim || order == 0 ) break;
@@ -1661,7 +1667,7 @@ MRESReturn ChooseVictim(int attacker, Handle hReturn)
 		if( allPinned )
 		{
 			#if DEBUG_BENCHMARK == 3
-			PrintToServer("All pinned, selecting self: %d (%N)", attacker, attacker);
+			PrintToServer("All pinned, selecting self: {%d - \"%N\"}", attacker, attacker);
 			#endif
 
 			newVictim = attacker;
@@ -1676,7 +1682,7 @@ MRESReturn ChooseVictim(int attacker, Handle hReturn)
 	if( newVictim != g_iLastVictim[attacker] )
 	{
 		#if DEBUG_BENCHMARK == 3
-		PrintToServer("New order victim selected: %d (%N) (order %d/%d)", newVictim, newVictim, order, orders);
+		PrintToServer("New order victim selected: {%d - \"%N\"} (order %d/%d)", newVictim, newVictim, order, orders);
 		#endif
 
 		g_iLastOrders[attacker] = order;
@@ -1733,7 +1739,7 @@ MRESReturn ChooseVictim(int attacker, Handle hReturn)
 int OrderTest(int attacker, int victim, int team, int class, int order)
 {
 	#if DEBUG_BENCHMARK == 3
-	PrintToServer("Begin OrderTest for (%d - %N). Test (%d - %N) with order: %d", attacker, attacker, victim, victim, order);
+	PrintToServer("Begin OrderTest for {%d - \"%N\"}. Test {%d - \"%N\"} with order: %d", attacker, attacker, victim, victim, order);
 	#endif
 
 	int newVictim;
@@ -1821,7 +1827,7 @@ int OrderTest(int attacker, int victim, int team, int class, int order)
 		// 6=Infected Vomited
 		case 6:
 		{
-			if( team == 3 && victim != attacker && g_bPinBoomer[victim] )
+			if( team == 3 && victim != attacker && g_bPinBoomer[victim] && class != INDEX_TANK ) // Prevent Tank attacking vomited Special Infected, since the Tank won't punch them.
 			{
 				newVictim = victim;
 
@@ -1855,67 +1861,73 @@ int OrderTest(int attacker, int victim, int team, int class, int order)
 		// 8=Lowest Health Survivor
 		case 8:
 		{
-			int target;
-			int health;
-			int total = 10000;
-
-			for( int i = 1; i <= MaxClients; i++ )
+			if( team == 2 )
 			{
-				if( IsClientInGame(i) && ValidateTeam(i) == 2 && IsPlayerAlive(i) )
+				int target;
+				int health;
+				int total = 10000;
+
+				for( int i = 1; i <= MaxClients; i++ )
 				{
-					health = RoundFloat(GetClientHealth(i) + GetTempHealth(i));
-					if( health < total )
+					if( IsClientInGame(i) && ValidateTeam(i) == 2 && IsPlayerAlive(i) )
 					{
-						target = i;
-						total = health;
+						health = RoundFloat(GetClientHealth(i) + GetTempHealth(i));
+						if( health < total )
+						{
+							target = i;
+							total = health;
+						}
 					}
 				}
-			}
 
-			if( target == victim )
-			{
-				newVictim = target;
+				if( target == victim )
+				{
+					newVictim = target;
 
-				#if DEBUG_BENCHMARK == 3
-				PrintToServer("Break order 8");
-				#endif
+					#if DEBUG_BENCHMARK == 3
+					PrintToServer("Break order 8");
+					#endif
+				}
 			}
 		}
 
 		// 9=Highest Health Survivor
 		case 9:
 		{
-			int target;
-			int health;
-			int total;
-
-			for( int i = 1; i <= MaxClients; i++ )
+			if( team == 2 )
 			{
-				if( IsClientInGame(i) && ValidateTeam(i) == 2 && IsPlayerAlive(i) )
+				int target;
+				int health;
+				int total;
+
+				for( int i = 1; i <= MaxClients; i++ )
 				{
-					health = RoundFloat(GetClientHealth(i) + GetTempHealth(i));
-					if( health > total )
+					if( IsClientInGame(i) && ValidateTeam(i) == 2 && IsPlayerAlive(i) )
 					{
-						target = i;
-						total = health;
+						health = RoundFloat(GetClientHealth(i) + GetTempHealth(i));
+						if( health > total )
+						{
+							target = i;
+							total = health;
+						}
 					}
 				}
-			}
 
-			if( target == victim )
-			{
-				newVictim = target;
+				if( target == victim )
+				{
+					newVictim = target;
 
-				#if DEBUG_BENCHMARK == 3
-				PrintToServer("Break order 9");
-				#endif
+					#if DEBUG_BENCHMARK == 3
+					PrintToServer("Break order 9");
+					#endif
+				}
 			}
 		}
 
 		// 10=Pummelled Survivor
 		case 10:
 		{
-			if( g_bPumCharger[victim] )
+			if( team == 2 && g_bPumCharger[victim] )
 			{
 				newVictim = victim;
 
@@ -1928,7 +1940,7 @@ int OrderTest(int attacker, int victim, int team, int class, int order)
 		// 11=Mounted Mini Gun
 		case 11:
 		{
-			if( GetEntProp(victim, Prop_Send, "m_usingMountedWeapon") > 0 )
+			if( team == 2 && GetEntProp(victim, Prop_Send, "m_usingMountedWeapon") > 0 )
 			{
 				newVictim = victim;
 
@@ -1941,7 +1953,7 @@ int OrderTest(int attacker, int victim, int team, int class, int order)
 		// 12=Reviving someone
 		case 12:
 		{
-			if( GetEntPropEnt(victim, Prop_Send, "m_reviveTarget") > 0 )
+			if( team == 2 && GetEntPropEnt(victim, Prop_Send, "m_reviveTarget") > 0 )
 			{
 				newVictim = victim;
 
@@ -1954,7 +1966,7 @@ int OrderTest(int attacker, int victim, int team, int class, int order)
 		// 13=Furthest Ahead
 		case 13:
 		{
-			if( g_bLeft4DHooks && L4D_GetHighestFlowSurvivor() == victim )
+			if( g_bLeft4DHooks && team == 2 && L4D_GetHighestFlowSurvivor() == victim )
 			{
 				newVictim = victim;
 
@@ -1967,7 +1979,7 @@ int OrderTest(int attacker, int victim, int team, int class, int order)
 		// 14=Healing critical
 		case 14:
 		{
-			if( (g_bLeft4Dead2 && GetEntPropEnt(victim, Prop_Send, "m_useActionTarget") == victim && GetEntProp(victim, Prop_Send, "m_iCurrentUseAction") == 1) || (!g_bLeft4Dead2 && GetEntPropEnt(victim, Prop_Send, "m_healTarget") == victim) )
+			if( (g_bLeft4Dead2 && team == 2 && GetEntPropEnt(victim, Prop_Send, "m_useActionTarget") == victim && GetEntProp(victim, Prop_Send, "m_iCurrentUseAction") == 1) || (!g_bLeft4Dead2 && team == 2 && GetEntPropEnt(victim, Prop_Send, "m_healTarget") == victim) )
 			{
 				int health = RoundFloat(GetClientHealth(victim) + GetTempHealth(victim));
 				if( health < g_fCvarLimp )
@@ -1984,7 +1996,7 @@ int OrderTest(int attacker, int victim, int team, int class, int order)
 		// 15=Furthest Ahead
 		case 15:
 		{
-			if( g_bLeft4DHooks )
+			if( g_bLeft4DHooks && team == 2 )
 			{
 				float flow;
 				float last = 99999.9;
@@ -2017,7 +2029,7 @@ int OrderTest(int attacker, int victim, int team, int class, int order)
 		// 16=Flashlight on
 		case 16:
 		{
-			if( GetEntProp(victim, Prop_Send, "m_fEffects") & 4 )
+			if( team == 2 && GetEntProp(victim, Prop_Send, "m_fEffects") & 4 )
 			{
 				newVictim = victim;
 
@@ -2030,14 +2042,17 @@ int OrderTest(int attacker, int victim, int team, int class, int order)
 		// 17=Running
 		case 17:
 		{
-			int buttons = GetClientButtons(victim);
-			if( !(buttons & IN_SPEED) && !(buttons & IN_DUCK) && (buttons & IN_FORWARD || buttons & IN_BACK || buttons & IN_MOVELEFT || buttons & IN_MOVERIGHT) )
+			if( team == 2 )
 			{
-				newVictim = victim;
+				int buttons = GetClientButtons(victim);
+				if( !(buttons & IN_SPEED) && !(buttons & IN_DUCK) && (buttons & IN_FORWARD || buttons & IN_BACK || buttons & IN_MOVELEFT || buttons & IN_MOVERIGHT) )
+				{
+					newVictim = victim;
 
-				#if DEBUG_BENCHMARK == 3
-				PrintToServer("Break order 17");
-				#endif
+					#if DEBUG_BENCHMARK == 3
+					PrintToServer("Break order 17");
+					#endif
+				}
 			}
 		}
 	}
