@@ -18,7 +18,7 @@
 
 
 
-#define PLUGIN_VERSION 		"2.23"
+#define PLUGIN_VERSION 		"2.24"
 #define DEBUG_BENCHMARK		0			// 0=Off. 1=Benchmark only (for command). 2=Benchmark (displays on server). 3=PrintToServer various data.
 
 /*======================================================================================
@@ -32,6 +32,9 @@
 
 ========================================================================================
 	Change Log:
+
+2.24 (24-Nov-2022)
+	- Fixed plugin not accounting for idle or disconnected players being replaced by bots. Thanks to "HarryPotter" for help.
 
 2.23 (28-Oct-2022)
 	- Fixed Special Infected not being able to target other SI. Tank vs SI is still not capable. Thanks to "Tonblader" for reporting.
@@ -633,6 +636,8 @@ void IsAllowed()
 		HookEvent("tongue_release",						Event_SmokerEnd);
 		HookEvent("player_left_checkpoint",				Event_LeftCheckpoint);
 		HookEvent("player_entered_checkpoint",			Event_EnteredCheckpoint);
+		HookEvent("player_bot_replace",					Event_PlayerReplace);
+		HookEvent("bot_player_replace",					Event_BotReplace);
 
 		if( g_bLeft4Dead2 )
 		{
@@ -668,6 +673,8 @@ void IsAllowed()
 		UnhookEvent("tongue_release",					Event_SmokerEnd);
 		UnhookEvent("player_left_checkpoint",			Event_LeftCheckpoint);
 		UnhookEvent("player_entered_checkpoint",		Event_EnteredCheckpoint);
+		UnhookEvent("player_bot_replace",				Event_PlayerReplace);
+		UnhookEvent("bot_player_replace",				Event_BotReplace);
 
 		if( g_bLeft4Dead2 )
 		{
@@ -781,6 +788,42 @@ void Event_EnteredCheckpoint(Event event, const char[] name, bool dontBroadcast)
 void Event_LeftCheckpoint(Event event, const char[] name, bool dontBroadcast)
 {
 	g_bCheckpoint[GetClientOfUserId(event.GetInt("userid"))] = false;
+}
+
+void Event_PlayerReplace(Event event, const char[] name, bool dontBroadcast)
+{
+	int bot = GetClientOfUserId(GetEventInt(event, "bot"));
+	int player = GetClientOfUserId(GetEventInt(event, "player"));
+
+	g_bCheckpoint[bot]	= g_bCheckpoint[player];
+	g_bIncapped[bot] 	= g_bIncapped[player];
+	g_bLedgeGrab[bot]	= g_bLedgeGrab[player];
+	g_bPinSmoker[bot]	= g_bPinSmoker[player];
+	g_bPinHunter[bot]	= g_bPinHunter[player];
+	if( g_bLeft4Dead2 )
+	{
+		g_bPinJockey[bot]	= g_bPinJockey[player];
+		g_bPinCharger[bot]	= g_bPinCharger[player];
+		g_bPumCharger[bot]	= g_bPumCharger[player];
+	}
+}
+
+void Event_BotReplace(Event event, const char[] name, bool dontBroadcast)
+{
+	int bot = GetClientOfUserId(GetEventInt(event, "bot"));
+	int player = GetClientOfUserId(GetEventInt(event, "player"));
+
+	g_bCheckpoint[player]	= g_bCheckpoint[bot];
+	g_bIncapped[player] 	= g_bIncapped[bot];
+	g_bLedgeGrab[player]	= g_bLedgeGrab[bot];
+	g_bPinSmoker[player]	= g_bPinSmoker[bot];
+	g_bPinHunter[player]	= g_bPinHunter[bot];
+	if( g_bLeft4Dead2 )
+	{
+		g_bPinJockey[player]	= g_bPinJockey[bot];
+		g_bPinCharger[player]	= g_bPinCharger[bot];
+		g_bPumCharger[player]	= g_bPumCharger[bot];
+	}
 }
 
 void HookPlayerHurt(bool doHook)
