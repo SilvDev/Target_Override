@@ -1,6 +1,6 @@
 /*
 *	Target Override
-*	Copyright (C) 2022 Silvers
+*	Copyright (C) 2023 Silvers
 *
 *	This program is free software: you can redistribute it and/or modify
 *	it under the terms of the GNU General Public License as published by
@@ -18,7 +18,7 @@
 
 
 
-#define PLUGIN_VERSION 		"2.24"
+#define PLUGIN_VERSION 		"2.25"
 #define DEBUG_BENCHMARK		0			// 0=Off. 1=Benchmark only (for command). 2=Benchmark (displays on server). 3=PrintToServer various data.
 
 /*======================================================================================
@@ -32,6 +32,11 @@
 
 ========================================================================================
 	Change Log:
+
+2.25 (19-Jun-2023)
+	- Added option "18" to target the Survivor who caused the highest damage.
+	- Fixed issues with the "time" option and resetting the last attacker.
+	- Thanks to "Kanashimi" and "kooper990" for helping test.
 
 2.24 (24-Nov-2022)
 	- Fixed plugin not accounting for idle or disconnected players being replaced by bots. Thanks to "HarryPotter" for help.
@@ -244,7 +249,7 @@ int g_iFixCount, g_iFixMatch;
 
 
 #define MAX_BUFFER		48		// Maximum buffer size when exploding the "order" string "0,0,0"
-#define MAX_ORDERS		17		// Maximum number of "order"'s
+#define MAX_ORDERS		18		// Maximum number of "order"'s
 int g_iOrderTank[MAX_ORDERS];
 int g_iOrderSmoker[MAX_ORDERS];
 int g_iOrderBoomer[MAX_ORDERS];
@@ -267,6 +272,7 @@ float g_fOptionLast[MAX_SPECIAL];
 float g_fOptionWait[MAX_SPECIAL];
 
 #define MAX_PLAY		MAXPLAYERS+1
+float g_fTotalDamage[MAX_PLAY][MAX_PLAY];
 float g_fLastSwitch[MAX_PLAY];
 float g_fLastAttack[MAX_PLAY];
 int g_iLastAttacker[MAX_PLAY];
@@ -778,6 +784,8 @@ public void OnClientDisconnect(int client)
 			g_iLastVictim[i] = 0;
 		}
 	}
+
+	ResetVars(client);
 }
 
 void Event_EnteredCheckpoint(Event event, const char[] name, bool dontBroadcast)
@@ -844,21 +852,27 @@ void HookPlayerHurt(bool doHook)
 	if( doHook && hook && !bHookedHurt )
 	{
 		bHookedHurt = true;
-		HookEvent("player_hurt",		Event_PlayerHurt);
+		HookEvent("player_hurt", Event_PlayerHurt);
 	}
 	else if( (!doHook || !hook) && bHookedHurt )
 	{
 		bHookedHurt = false;
-		UnhookEvent("player_hurt",		Event_PlayerHurt);
+		UnhookEvent("player_hurt", Event_PlayerHurt);
 	}
 }
 
 void ResetVars(int client)
 {
+	for( int i = 0; i <= MaxClients; i++ )
+	{
+		g_fTotalDamage[i][client] = 0.0;
+		g_fTotalDamage[client][i] = 0.0;
+	}
+
 	g_iLastAttacker[client] = 0;
 	g_iLastOrders[client] = 0;
 	g_iLastVictim[client] = 0;
-	g_fLastSwitch[client] = 0.0;
+	g_fLastAttack[client] = 0.0;
 	g_fLastAttack[client] = 0.0;
 	g_bIncapped[client] = false;
 	g_bLedgeGrab[client] = false;
@@ -892,6 +906,7 @@ void Event_PlayerSpawn(Event event, const char[] name, bool dontBroadcast)
 void Event_PlayerDeath(Event event, const char[] name, bool dontBroadcast)
 {
 	int client = GetClientOfUserId(event.GetInt("userid"));
+	ResetVars(client);
 
 	g_iLastVictim[client] = 0;
 
@@ -899,6 +914,9 @@ void Event_PlayerDeath(Event event, const char[] name, bool dontBroadcast)
 	{
 		for( int i = 1; i <= MaxClients; i++ )
 		{
+			g_fTotalDamage[i][client] = 0.0;
+			g_fTotalDamage[client][i] = 0.0;
+
 			if( g_iLastVictim[i] == client )
 			{
 				g_iLastVictim[i] = 0;
@@ -909,16 +927,27 @@ void Event_PlayerDeath(Event event, const char[] name, bool dontBroadcast)
 
 void Event_PlayerHurt(Event event, const char[] name, bool dontBroadcast)
 {
-	int client = GetClientOfUserId(event.GetInt("userid"));
-	int attacker = event.GetInt("attacker");
-	if( attacker )
+	int attacker = GetClientOfUserId(event.GetInt("attacker"));
+	if( attacker && IsClientInGame(attacker) )
 	{
-		int type = event.GetInt("type");
-
-		if( type & (DMG_BULLET|DMG_SLASH|DMG_CLUB) )
+		int client = GetClientOfUserId(event.GetInt("userid"));
+		if( client && GetClientTeam(client) == 3 )
 		{
-			g_iLastAttacker[client] = attacker;
-			g_fLastAttack[client] = GetGameTime();
+			int class = GetEntProp(client, Prop_Send, "m_zombieClass");
+			if( class == g_iClassTank ) class = 0;
+
+			if( g_fLastAttack[client] + g_fOptionLast[class] > GetGameTime() )
+			{
+				int type = event.GetInt("type");
+
+				if( type & (DMG_BULLET|DMG_SLASH|DMG_CLUB) )
+				{
+					g_iLastAttacker[client] = attacker;
+					g_fLastAttack[client] = GetGameTime();
+				}
+			}
+
+			g_fTotalDamage[attacker][client] += event.GetInt("dmg_health");
 		}
 	}
 }
@@ -1607,7 +1636,7 @@ MRESReturn ChooseVictim(int attacker, Handle hReturn)
 
 					if( g_iOptionPinned[class] & 8 && g_bPinCharger[victim] )
 					{
-						if( GetEntPropEnt(victim, Prop_Send, "m_carryAttacker") == -1  || GetEntPropEnt(victim, Prop_Send, "m_pummelAttacker") == -1 )
+						if( GetEntPropEnt(victim, Prop_Send, "m_carryAttacker") == -1 || GetEntPropEnt(victim, Prop_Send, "m_pummelAttacker") == -1 )
 						{
 							allPinned = false;
 							g_bPinCharger[victim] = false;
@@ -1693,7 +1722,7 @@ MRESReturn ChooseVictim(int attacker, Handle hReturn)
 
 						if( g_iOptionPinned[class] & 8 && g_bPinCharger[i] )
 						{
-							if( GetEntPropEnt(i, Prop_Send, "m_carryAttacker") == -1  || GetEntPropEnt(i, Prop_Send, "m_pummelAttacker") == -1 )
+							if( GetEntPropEnt(i, Prop_Send, "m_carryAttacker") == -1 || GetEntPropEnt(i, Prop_Send, "m_pummelAttacker") == -1 )
 							{
 								allPinned = false;
 								g_bPinCharger[i] = false;
@@ -2036,7 +2065,7 @@ int OrderTest(int attacker, int victim, int team, int class, int order)
 			}
 		}
 
-		// 15=Furthest Ahead
+		// 15=Furthest Behind
 		case 15:
 		{
 			if( g_bLeft4DHooks && team == 2 )
@@ -2094,6 +2123,34 @@ int OrderTest(int attacker, int victim, int team, int class, int order)
 
 					#if DEBUG_BENCHMARK == 3
 					PrintToServer("Break order 17");
+					#endif
+				}
+			}
+		}
+
+		// 18=Damage
+		case 18:
+		{
+			if( team == 2 )
+			{
+				int target;
+				float max;
+
+				for( int i = 1; i <= MaxClients; i++ )
+				{
+					if( g_fTotalDamage[i][attacker] > max )
+					{
+						target = i;
+						max = g_fTotalDamage[i][attacker];
+					}
+				}
+
+				if( target == victim )
+				{
+					newVictim = victim;
+
+					#if DEBUG_BENCHMARK == 3
+					PrintToServer("Break order 18");
 					#endif
 				}
 			}
