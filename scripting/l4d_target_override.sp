@@ -18,7 +18,7 @@
 
 
 
-#define PLUGIN_VERSION 		"2.25"
+#define PLUGIN_VERSION 		"2.26"
 #define DEBUG_BENCHMARK		0			// 0=Off. 1=Benchmark only (for command). 2=Benchmark (displays on server). 3=PrintToServer various data.
 
 /*======================================================================================
@@ -32,6 +32,9 @@
 
 ========================================================================================
 	Change Log:
+
+2.26 (27-Jul-2023)
+	- Added option "19" to target a Survivor who is inside the saferoon. Requested by "SpannerV2".
 
 2.25 (19-Jun-2023)
 	- Added option "18" to target the Survivor who caused the highest damage.
@@ -219,6 +222,8 @@ native float L4D2Direct_GetFlowDistance(int client);
 native Address L4D2Direct_GetTerrorNavArea(const float pos[3], float beneathLimit = 120.0);
 native float L4D2Direct_GetTerrorNavAreaFlow(Address pTerrorNavArea);
 native int L4D_GetHighestFlowSurvivor();
+native bool L4D_IsInFirstCheckpoint(int client);
+native bool L4D_IsInLastCheckpoint(int client);
 
 
 
@@ -2153,6 +2158,19 @@ int OrderTest(int attacker, int victim, int team, int class, int order)
 					PrintToServer("Break order 18");
 					#endif
 				}
+			}
+		}
+
+		// 19=Saferoom
+		case 19:
+		{
+			if( g_bLeft4DHooks && team == 2 && (L4D_IsInFirstCheckpoint(victim) || L4D_IsInLastCheckpoint(victim)) )
+			{
+				newVictim = victim;
+
+				#if DEBUG_BENCHMARK == 3
+				PrintToServer("Break order 19");
+				#endif
 			}
 		}
 	}
