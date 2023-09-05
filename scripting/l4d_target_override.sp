@@ -18,7 +18,7 @@
 
 
 
-#define PLUGIN_VERSION 		"2.26"
+#define PLUGIN_VERSION 		"2.27"
 #define DEBUG_BENCHMARK		0			// 0=Off. 1=Benchmark only (for command). 2=Benchmark (displays on server). 3=PrintToServer various data.
 
 /*======================================================================================
@@ -33,8 +33,12 @@
 ========================================================================================
 	Change Log:
 
+2.27 (05-Sep-2023)
+	- Added option "20" to target a Survivor who is being chased by a Witch. Requested by "Xenorvya".
+	- This requires the Actions extension. Thanks to "ForgeTest" for providing the method and code.
+
 2.26 (27-Jul-2023)
-	- Added option "19" to target a Survivor who is inside the saferoon. Requested by "SpannerV2".
+	- Added option "19" to target a Survivor who is inside the saferoom. Requested by "SpannerV2".
 
 2.25 (19-Jun-2023)
 	- Added option "18" to target the Survivor who caused the highest damage.
@@ -217,6 +221,12 @@
 #include <dhooks>
 #include <l4d_target_override>
 
+#undef REQUIRE_EXTENSIONS
+#tryinclude <actions>
+#define REQUIRE_EXTENSIONS
+
+
+
 // Left4DHooks natives - optional - (added here to avoid requiring Left4DHooks include)
 native float L4D2Direct_GetFlowDistance(int client);
 native Address L4D2Direct_GetTerrorNavArea(const float pos[3], float beneathLimit = 120.0);
@@ -242,7 +252,7 @@ float g_iBenchTicks;
 #define CONFIG_DATA			"data/l4d_target_override.cfg"
 
 ConVar g_hCvarAllow, g_hCvarMPGameMode, g_hCvarModes, g_hCvarModesOff, g_hCvarModesTog, g_hCvarForward, g_hCvarSpecials, g_hCvarTeam, g_hCvarType, g_hDecayDecay, g_hCvarLimp;
-bool g_bCvarAllow, g_bMapStarted, g_bLateLoad, g_bLeft4Dead2, g_bLeft4DHooks, g_bCvarForward;
+bool g_bCvarAllow, g_bMapStarted, g_bLateLoad, g_bLeft4Dead2, g_bLeft4DHooks, g_bActions, g_bCvarForward;
 int g_iCvarSpecials, g_iCvarTeam, g_iCvarType, g_iClassTank;
 float g_fDecayDecay, g_fCvarLimp;
 Handle g_hDetour, g_hForward;
@@ -358,12 +368,16 @@ public void OnLibraryAdded(const char[] sName)
 {
 	if( strcmp(sName, "left4dhooks") == 0 )
 		g_bLeft4DHooks = true;
+	else if( strcmp(sName, "actionslib") == 0 )
+		g_bActions = true;
 }
 
 public void OnLibraryRemoved(const char[] sName)
 {
 	if( strcmp(sName, "left4dhooks") == 0 )
 		g_bLeft4DHooks = false;
+	else if( strcmp(sName, "actionslib") == 0 )
+		g_bActions = false;
 }
 
 public void OnAllPluginsLoaded()
@@ -2173,6 +2187,24 @@ int OrderTest(int attacker, int victim, int team, int class, int order)
 				#endif
 			}
 		}
+
+		// 20=Witch target
+		case 20:
+		{
+			if( g_bActions )
+			{
+				#if defined BehaviorAction
+				if( HasWitchAttacker(victim) )
+				{
+					newVictim = victim;
+
+					#if DEBUG_BENCHMARK == 3
+					PrintToServer("Break order 20");
+					#endif
+				}
+				#endif
+			}
+		}
 	}
 
 	// Ignore players using a minigun if not checking for that
@@ -2288,6 +2320,54 @@ Action SendForward(int attacker, int &victim, int order)
 
 	return Plugin_Continue;
 }
+
+
+
+// ====================================================================================================
+//					WITCH STOCKS
+// ====================================================================================================
+methodmap EHANDLE {
+    public int Get() {
+    #if SOURCEMOD_V_MAJOR >= 1 && SOURCEMOD_V_MINOR >= 12 && SOURCEMOD_V_REV >= 6964
+        return LoadEntityFromHandleAddress(view_as<Address>(this));
+    #else
+        static int s_iRandomOffsetToAnEHandle = -1;
+        if (s_iRandomOffsetToAnEHandle == -1)
+            s_iRandomOffsetToAnEHandle = FindSendPropInfo("CWorld", "m_hOwnerEntity");
+        
+        int temp = GetEntData(0, s_iRandomOffsetToAnEHandle, 4);
+        SetEntData(0, s_iRandomOffsetToAnEHandle, this, 4);
+        int result = GetEntDataEnt2(0, s_iRandomOffsetToAnEHandle);
+        SetEntData(0, s_iRandomOffsetToAnEHandle, temp, 4);
+        
+        return result;
+    #endif
+    }
+}
+
+#if defined BehaviorAction
+bool HasWitchAttacker(int client)
+{
+	int witch = -1;
+
+	while( (witch = FindEntityByClassname(witch, "witch")) != INVALID_ENT_REFERENCE )
+	{
+		if( IsValidEdict(witch) )
+		{
+			BehaviorAction action = ActionsManager.GetAction(witch, "WitchAttack");
+
+			if( action != INVALID_ACTION )
+			{
+				EHANDLE ehndl = action.Get(52);
+
+				if( ehndl.Get() == client ) return true;
+			}
+		}
+	}
+
+	return false;
+}
+#endif
 
 
 
