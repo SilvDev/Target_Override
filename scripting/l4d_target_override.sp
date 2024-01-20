@@ -1,6 +1,6 @@
 /*
 *	Target Override
-*	Copyright (C) 2023 Silvers
+*	Copyright (C) 2024 Silvers
 *
 *	This program is free software: you can redistribute it and/or modify
 *	it under the terms of the GNU General Public License as published by
@@ -18,7 +18,7 @@
 
 
 
-#define PLUGIN_VERSION 		"2.27"
+#define PLUGIN_VERSION 		"2.28"
 #define DEBUG_BENCHMARK		0			// 0=Off. 1=Benchmark only (for command). 2=Benchmark (displays on server). 3=PrintToServer various data.
 
 /*======================================================================================
@@ -32,6 +32,9 @@
 
 ========================================================================================
 	Change Log:
+
+2.28 (20-Jan-2024)
+	- Added option "minigun" to the data config to choose whether to ignore players on a minigun or treat them as normal players. Requested by "Morning".
 
 2.27 (05-Sep-2023)
 	- Added option "20" to target a Survivor who is being chased by a Witch. Requested by "Xenorvya".
@@ -277,6 +280,7 @@ int g_iOrderCharger[MAX_ORDERS];
 int g_iOptionLast[MAX_SPECIAL];
 int g_iOptionPinned[MAX_SPECIAL];
 int g_iOptionIncap[MAX_SPECIAL];
+int g_iOptionMini[MAX_SPECIAL];
 int g_iOptionVoms[MAX_SPECIAL];
 int g_iOptionVoms2[MAX_SPECIAL];
 int g_iOptionSafe[MAX_SPECIAL];
@@ -594,6 +598,7 @@ void ExplodeToArray(char[] key, KeyValues hFile, int index, int arr[MAX_ORDERS])
 
 		g_iOptionPinned[index] = hFile.GetNum("pinned");
 		g_iOptionIncap[index] = hFile.GetNum("incap");
+		g_iOptionMini[index] = hFile.GetNum("minigun");
 		g_iOptionVoms[index] = hFile.GetNum("voms");
 		g_iOptionVoms2[index] = hFile.GetNum("voms2");
 		g_fOptionRange[index] = hFile.GetFloat("range");
@@ -2208,7 +2213,7 @@ int OrderTest(int attacker, int victim, int team, int class, int order)
 	}
 
 	// Ignore players using a minigun if not checking for that
-	if( newVictim && order != 11 && GetEntProp(newVictim, Prop_Send, "m_usingMountedWeapon") > 0 )
+	if( newVictim && order != 11 && g_iOptionMini[class] == 0 && GetEntProp(newVictim, Prop_Send, "m_usingMountedWeapon") > 0 )
 	{
 		newVictim = 0;
 	}
