@@ -18,7 +18,7 @@
 
 
 
-#define PLUGIN_VERSION 		"2.28"
+#define PLUGIN_VERSION 		"2.29"
 #define DEBUG_BENCHMARK		0			// 0=Off. 1=Benchmark only (for command). 2=Benchmark (displays on server). 3=PrintToServer various data.
 
 /*======================================================================================
@@ -32,6 +32,10 @@
 
 ========================================================================================
 	Change Log:
+
+2.29 (25-Mar-2024)
+	- Plugin now follows the "nb_blind" cvar and prevents attacking if set to "1".
+	- Added option "21" to target a Survivor whose health is below "survivor_limp_health" cvar value. Requested by "jimmycm123".
 
 2.28 (20-Jan-2024)
 	- Added option "minigun" to the data config to choose whether to ignore players on a minigun or treat them as normal players. Requested by "Morning".
@@ -254,10 +258,10 @@ float g_iBenchTicks;
 #define GAMEDATA			"l4d_target_override"
 #define CONFIG_DATA			"data/l4d_target_override.cfg"
 
-ConVar g_hCvarAllow, g_hCvarMPGameMode, g_hCvarModes, g_hCvarModesOff, g_hCvarModesTog, g_hCvarForward, g_hCvarSpecials, g_hCvarTeam, g_hCvarType, g_hDecayDecay, g_hCvarLimp;
-bool g_bCvarAllow, g_bMapStarted, g_bLateLoad, g_bLeft4Dead2, g_bLeft4DHooks, g_bActions, g_bCvarForward;
+ConVar g_hCvarAllow, g_hCvarMPGameMode, g_hCvarModes, g_hCvarModesOff, g_hCvarModesTog, g_hCvarForward, g_hCvarSpecials, g_hCvarTeam, g_hCvarType, g_hCvarDecay, g_hCvarBlind, g_hCvarLimp;
+bool g_bCvarAllow, g_bMapStarted, g_bLateLoad, g_bLeft4Dead2, g_bLeft4DHooks, g_bActions, g_bCvarBlind, g_bCvarForward;
 int g_iCvarSpecials, g_iCvarTeam, g_iCvarType, g_iClassTank;
-float g_fDecayDecay, g_fCvarLimp;
+float g_fCvarDecay, g_fCvarLimp;
 Handle g_hDetour, g_hForward;
 
 ArrayList g_BytesSaved;
@@ -464,8 +468,9 @@ public void OnPluginStart()
 	CreateConVar(							"l4d_target_override_version",			PLUGIN_VERSION,		"Target Override plugin version.", FCVAR_NOTIFY|FCVAR_DONTRECORD);
 	AutoExecConfig(true,					"l4d_target_override");
 
+	g_hCvarBlind = FindConVar("nb_blind");
 	g_hCvarLimp = FindConVar("survivor_limp_health");
-	g_hDecayDecay = FindConVar("pain_pills_decay_rate");
+	g_hCvarDecay = FindConVar("pain_pills_decay_rate");
 	g_hCvarMPGameMode = FindConVar("mp_gamemode");
 	g_hCvarMPGameMode.AddChangeHook(ConVarChanged_Allow);
 	g_hCvarModes.AddChangeHook(ConVarChanged_Allow);
@@ -476,7 +481,8 @@ public void OnPluginStart()
 	g_hCvarSpecials.AddChangeHook(ConVarChanged_Cvars);
 	g_hCvarTeam.AddChangeHook(ConVarChanged_Cvars);
 	g_hCvarType.AddChangeHook(ConVarChanged_Cvars);
-	g_hDecayDecay.AddChangeHook(ConVarChanged_Cvars);
+	g_hCvarDecay.AddChangeHook(ConVarChanged_Cvars);
+	g_hCvarBlind.AddChangeHook(ConVarChanged_Cvars);
 	g_hCvarLimp.AddChangeHook(ConVarChanged_Cvars);
 
 
@@ -634,7 +640,8 @@ void ConVarChanged_Cvars(Handle convar, const char[] oldValue, const char[] newV
 
 void GetCvars()
 {
-	g_fDecayDecay =		g_hDecayDecay.FloatValue;
+	g_fCvarDecay =		g_hCvarDecay.FloatValue;
+	g_bCvarBlind =		g_hCvarBlind.BoolValue;
 	g_fCvarLimp =		g_hCvarLimp.FloatValue;
 	g_bCvarForward =	g_hCvarForward.BoolValue;
 	g_iCvarSpecials =	g_hCvarSpecials.IntValue;
@@ -1116,6 +1123,8 @@ void DetourAddress(bool patch)
 
 MRESReturn ChooseVictim(int attacker, Handle hReturn)
 {
+	if( g_bCvarBlind ) return MRES_Ignored;
+
 	#if DEBUG_BENCHMARK == 1 || DEBUG_BENCHMARK == 2
 	StartProfiling(g_Prof);
 	#endif
@@ -2210,6 +2219,20 @@ int OrderTest(int attacker, int victim, int team, int class, int order)
 				#endif
 			}
 		}
+
+		// 14=Critical health
+		case 21:
+		{
+			int health = RoundFloat(GetClientHealth(victim) + GetTempHealth(victim));
+			if( health < g_fCvarLimp )
+			{
+				newVictim = victim;
+
+				#if DEBUG_BENCHMARK == 3
+				PrintToServer("Break order 21");
+				#endif
+			}
+		}
 	}
 
 	// Ignore players using a minigun if not checking for that
@@ -2329,28 +2352,28 @@ Action SendForward(int attacker, int &victim, int order)
 
 
 // ====================================================================================================
-//					WITCH STOCKS
+//					WITCH STOCKS - Credit to "ForgeTest" for this method
 // ====================================================================================================
+#if defined BehaviorAction
 methodmap EHANDLE {
-    public int Get() {
-    #if SOURCEMOD_V_MAJOR >= 1 && SOURCEMOD_V_MINOR >= 12 && SOURCEMOD_V_REV >= 6964
-        return LoadEntityFromHandleAddress(view_as<Address>(this));
-    #else
-        static int s_iRandomOffsetToAnEHandle = -1;
-        if (s_iRandomOffsetToAnEHandle == -1)
-            s_iRandomOffsetToAnEHandle = FindSendPropInfo("CWorld", "m_hOwnerEntity");
-        
-        int temp = GetEntData(0, s_iRandomOffsetToAnEHandle, 4);
-        SetEntData(0, s_iRandomOffsetToAnEHandle, this, 4);
-        int result = GetEntDataEnt2(0, s_iRandomOffsetToAnEHandle);
-        SetEntData(0, s_iRandomOffsetToAnEHandle, temp, 4);
-        
-        return result;
-    #endif
-    }
+	public int Get() {
+	#if SOURCEMOD_V_MAJOR >= 1 && SOURCEMOD_V_MINOR >= 12 && SOURCEMOD_V_REV >= 6964
+		return LoadEntityFromHandleAddress(view_as<Address>(this));
+	#else
+		static int s_iRandomOffsetToAnEHandle = -1;
+		if( s_iRandomOffsetToAnEHandle == -1 )
+			s_iRandomOffsetToAnEHandle = FindSendPropInfo("CWorld", "m_hOwnerEntity");
+
+		int temp = GetEntData(0, s_iRandomOffsetToAnEHandle, 4);
+		SetEntData(0, s_iRandomOffsetToAnEHandle, this, 4);
+		int result = GetEntDataEnt2(0, s_iRandomOffsetToAnEHandle);
+		SetEntData(0, s_iRandomOffsetToAnEHandle, temp, 4);
+
+		return result;
+	#endif
+	}
 }
 
-#if defined BehaviorAction
 bool HasWitchAttacker(int client)
 {
 	int witch = -1;
@@ -2382,7 +2405,7 @@ bool HasWitchAttacker(int client)
 float GetTempHealth(int client)
 {
 	float fHealth = GetEntPropFloat(client, Prop_Send, "m_healthBuffer");
-	fHealth -= (GetGameTime() - GetEntPropFloat(client, Prop_Send, "m_healthBufferTime")) * g_fDecayDecay;
+	fHealth -= (GetGameTime() - GetEntPropFloat(client, Prop_Send, "m_healthBufferTime")) * g_fCvarDecay;
 	return fHealth < 0.0 ? 0.0 : fHealth;
 }
 
