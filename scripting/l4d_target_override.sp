@@ -1,6 +1,6 @@
 /*
 *	Target Override
-*	Copyright (C) 2024 Silvers
+*	Copyright (C) 2025 Silvers
 *
 *	This program is free software: you can redistribute it and/or modify
 *	it under the terms of the GNU General Public License as published by
@@ -18,7 +18,7 @@
 
 
 
-#define PLUGIN_VERSION 		"2.29"
+#define PLUGIN_VERSION 		"2.30"
 #define DEBUG_BENCHMARK		0			// 0=Off. 1=Benchmark only (for command). 2=Benchmark (displays on server). 3=PrintToServer various data.
 
 /*======================================================================================
@@ -32,6 +32,10 @@
 
 ========================================================================================
 	Change Log:
+
+2.30 (21-Mar-2025)
+	- L4D2: Plugin no longer throws error if the patch is already applied.
+	- Fixed not resetting a variable. Thanks to "Voevoda" for reporting.
 
 2.29 (25-Mar-2024)
 	- Plugin now follows the "nb_blind" cvar and prevents attacking if set to "1".
@@ -444,7 +448,7 @@ public void OnPluginStart()
 			g_BytesSaved.Push(LoadFromAddress(g_iFixOffset + view_as<Address>(i), NumberType_Int8));
 		}
 
-		if( g_BytesSaved.Get(0) != g_iFixMatch ) SetFailState("Failed to load, byte mis-match @ %d (0x%02X != 0x%02X)", offs, g_BytesSaved.Get(0), g_iFixMatch);
+		if( g_BytesSaved.Get(0) != g_iFixMatch && g_BytesSaved.Get(0) != 0x90 ) SetFailState("Failed to load, byte mismatch @ %d (0x%02X != 0x%02X)", offs, g_BytesSaved.Get(0), g_iFixMatch);
 	}
 
 	delete hGameData;
@@ -903,7 +907,7 @@ void ResetVars(int client)
 	g_iLastAttacker[client] = 0;
 	g_iLastOrders[client] = 0;
 	g_iLastVictim[client] = 0;
-	g_fLastAttack[client] = 0.0;
+	g_fLastSwitch[client] = 0.0;
 	g_fLastAttack[client] = 0.0;
 	g_bIncapped[client] = false;
 	g_bLedgeGrab[client] = false;
@@ -2220,7 +2224,7 @@ int OrderTest(int attacker, int victim, int team, int class, int order)
 			}
 		}
 
-		// 14=Critical health
+		// 21=Critical health
 		case 21:
 		{
 			int health = RoundFloat(GetClientHealth(victim) + GetTempHealth(victim));
