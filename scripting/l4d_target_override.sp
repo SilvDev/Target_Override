@@ -18,7 +18,7 @@
 
 
 
-#define PLUGIN_VERSION 		"2.33"
+#define PLUGIN_VERSION 		"2.34"
 #define DEBUG_BENCHMARK		0			// 0=Off. 1=Benchmark only (for command). 2=Benchmark (displays on server). 3=PrintToServer various data.
 
 /*======================================================================================
@@ -32,13 +32,18 @@
 
 ========================================================================================
 	Change Log:
-
+	
+2.34
+	- Use a better method to detect whether a player has been vomited on by a Boomer (replacing "g_bPinBoomer").
+	- Fixed an issue where players hit by a Charger were not considered pinned.
+	- Calculates the distance between two vectors, the result will be squared (for optimization)
+	
 2.33 (12-Jun-2026)
 	- Fixed invalid address errors from the "rescue" option. Thanks to "liquidplasma".
 
 2.32 (04-Jun-2026)
-	- Added option "22" to target Survivors who molotov or bile bombed the attacker. Requested by "".
-	- Added option "23" to target Survivors holding a specific weapon. Requested by "".
+	- Added option "22" to target Survivors who molotov or bile bombed the attacker. Requested by "Xenorvya".
+	- Added option "23" to target Survivors holding a specific weapon. Requested by "Xenorvya".
 	- Fixed a memory leak when the forward blocks attacking someone.
 	- Plugin, data config and scripting include file updated.
 
@@ -46,7 +51,7 @@
 	- Added command "sm_to_option" to get or set special infected target options, identical to the current get and set option natives.
 	- Added option "rescue" to block targeting those in a rescue vehicle. Requested by "Jedrickx".
 	- Plugin, data config and scripting include file updated.
-
+	
 2.30 (21-Mar-2025)
 	- L4D2: Plugin no longer throws error if the patch is already applied.
 	- Fixed not resetting a variable. Thanks to "Voevoda" for reporting.
@@ -302,8 +307,8 @@ int g_iOptionResc[MAX_SPECIAL];
 int g_iOptionResX[MAX_SPECIAL];
 int g_iOptionTarg[MAX_SPECIAL];
 int g_iOptionBomb[MAX_SPECIAL];
-float g_fOptionRange[MAX_SPECIAL];
-float g_fOptionDist[MAX_SPECIAL];
+float g_fOptionRange[MAX_SPECIAL], g_fOptionRangeSquart[MAX_SPECIAL];
+float g_fOptionDist[MAX_SPECIAL], g_fOptionDistSquart[MAX_SPECIAL];
 float g_fOptionLast[MAX_SPECIAL];
 float g_fOptionWait[MAX_SPECIAL];
 char g_sWeaponTarget[MAX_SPECIAL][1024];
@@ -319,7 +324,6 @@ int g_iLastBombBile[MAX_PLAY];
 int g_iLastBombFire[MAX_PLAY];
 bool g_bIncapped[MAX_PLAY];
 bool g_bLedgeGrab[MAX_PLAY];
-bool g_bPinBoomer[MAX_PLAY];
 bool g_bPinSmoker[MAX_PLAY];
 bool g_bPinHunter[MAX_PLAY];
 bool g_bPinJockey[MAX_PLAY];
@@ -361,7 +365,7 @@ enum
 public Plugin myinfo =
 {
 	name = "[L4D & L4D2] Target Override",
-	author = "SilverShot",
+	author = "SilverShot, Harry",
 	description = "Overrides Special Infected targeting of Survivors.",
 	version = PLUGIN_VERSION,
 	url = "https://forums.alliedmods.net/showthread.php?t=322311"
@@ -534,10 +538,9 @@ public void OnPluginStart()
 				if( g_bLeft4Dead2 )
 				{
 					g_bPinJockey[i]		= GetEntPropEnt(i, Prop_Send, "m_jockeyAttacker") > 0;
-					g_bPinCharger[i]	= GetEntPropEnt(i, Prop_Send, "m_pummelAttacker") > 0;
+					g_bPinCharger[i]	= GetEntPropEnt(i, Prop_Send, "m_pummelAttacker") > 0 || GetEntPropEnt(i, Prop_Send, "m_carryAttacker") > 0 || L4D2_GetQueuedPummelAttacker(i) > 0;
 					g_bPumCharger[i] = g_bPinCharger[i];
 				}
-				// g_bPinBoomer[i]		= Unvomit/Left4DHooks method could solve this, but only required for lateload - cba.
 			}
 		}
 	}
@@ -730,8 +733,8 @@ void ExplodeToArray(char[] key, KeyValues hFile, int index, int arr[MAX_ORDERS])
 		g_iOptionMini[index] = hFile.GetNum("minigun");
 		g_iOptionVoms[index] = hFile.GetNum("voms");
 		g_iOptionVoms2[index] = hFile.GetNum("voms2");
-		g_fOptionRange[index] = hFile.GetFloat("range");
-		g_fOptionDist[index] = hFile.GetFloat("dist");
+		g_fOptionRange[index] = hFile.GetFloat("range"); g_fOptionRangeSquart[index] = g_fOptionRange[index] * g_fOptionRange[index];
+		g_fOptionDist[index] = hFile.GetFloat("dist"); g_fOptionDistSquart[index] = g_fOptionDist[index] * g_fOptionDist[index];
 		g_fOptionWait[index] = hFile.GetFloat("wait");
 		g_iOptionLast[index] = hFile.GetNum("last");
 		g_fOptionLast[index] = hFile.GetFloat("time");
@@ -798,8 +801,6 @@ void IsAllowed()
 		HookEvent("revive_success",						Event_ReviveSuccess);	// Revived
 		HookEvent("player_incapacitated",				Event_Incapacitated);
 		HookEvent("player_ledge_grab",					Event_LedgeGrab);		// Ledge
-		HookEvent("player_now_it",						Event_BoomerStart);		// Boomer
-		HookEvent("player_no_longer_it",				Event_BoomerEnd);
 		HookEvent("lunge_pounce",						Event_HunterStart);		// Hunter
 		HookEvent("pounce_end",							Event_HunterEnd);
 		HookEvent("tongue_grab",						Event_SmokerStart);		// Smoker
@@ -835,8 +836,6 @@ void IsAllowed()
 		UnhookEvent("revive_success",					Event_ReviveSuccess);	// Revived
 		UnhookEvent("player_incapacitated",				Event_Incapacitated);
 		UnhookEvent("player_ledge_grab",				Event_LedgeGrab);		// Ledge
-		UnhookEvent("player_now_it",					Event_BoomerStart);		// Boomer
-		UnhookEvent("player_no_longer_it",				Event_BoomerEnd);
 		UnhookEvent("lunge_pounce",						Event_HunterStart);		// Hunter
 		UnhookEvent("pounce_end",						Event_HunterEnd);
 		UnhookEvent("tongue_grab",						Event_SmokerStart);		// Smoker
@@ -1058,7 +1057,6 @@ void ResetVars(int client)
 	g_fLastAttack[client] = 0.0;
 	g_bIncapped[client] = false;
 	g_bLedgeGrab[client] = false;
-	g_bPinBoomer[client] = false;
 	g_bPinSmoker[client] = false;
 	g_bPinHunter[client] = false;
 	g_bPinJockey[client] = false;
@@ -1177,18 +1175,6 @@ void Event_SmokerEnd(Event event, const char[] name, bool dontBroadcast)
 {
 	int client = GetClientOfUserId(event.GetInt("victim"));
 	g_bPinSmoker[client] = false;
-}
-
-void Event_BoomerStart(Event event, const char[] name, bool dontBroadcast)
-{
-	int client = GetClientOfUserId(event.GetInt("userid"));
-	g_bPinBoomer[client] = true;
-}
-
-void Event_BoomerEnd(Event event, const char[] name, bool dontBroadcast)
-{
-	int client = GetClientOfUserId(event.GetInt("userid"));
-	g_bPinBoomer[client] = false;
 }
 
 void Event_HunterStart(Event event, const char[] name, bool dontBroadcast)
@@ -1389,12 +1375,12 @@ MRESReturn ChooseVictim(int attacker, Handle hReturn)
 				static float vPos[3], vVec[3];
 				GetClientAbsOrigin(newVictim, vPos);
 				GetClientAbsOrigin(attacker, vVec);
-				float dist = GetVectorDistance(vPos, vVec);
+				float dist = GetVectorDistance(vPos, vVec, true);
 
-				if( dist < g_fOptionDist[class] )
+				if( dist < g_fOptionDistSquart[class] )
 				{
 					#if DEBUG_BENCHMARK == 3
-					PrintToServer("=== Test Dist: within %0.2f / %0.2f range to keep target.", dist, g_fOptionDist[class]);
+					PrintToServer("=== Test Dist: within (squard) %0.2f / %0.2f  range to keep target.", dist, g_fOptionDistSquart[class]);
 					#endif
 
 					g_fLastSwitch[attacker] = GetGameTime() + g_fOptionWait[class];
@@ -1518,8 +1504,8 @@ MRESReturn ChooseVictim(int attacker, Handle hReturn)
 			team = ValidateTeam(victim);
 			// Option "voms2" then allow attacking vomited survivors else not vomited
 			// Option "voms" then allow choosing team 3 when vomited
-			if( (team == 2 && (g_iOptionVoms2[class] == 1 || g_bPinBoomer[victim] == false) ) ||
-				(team == 3 && g_iOptionVoms[class] == 1 && g_bPinBoomer[victim] == true) )
+			if( (team == 2 && (g_iOptionVoms2[class] == 1 || IsClientGetVomit(victim) == false) ) ||
+				(team == 3 && g_iOptionVoms[class] == 1 && IsClientGetVomit(victim) == true) )
 			{
 				// Saferoom test
 				if( !g_iOptionSafe[class] || !g_bCheckpoint[victim] )
@@ -1590,10 +1576,10 @@ MRESReturn ChooseVictim(int attacker, Handle hReturn)
 					else
 					{
 						GetClientAbsOrigin(victim, vTarg);
-						dist = GetVectorDistance(vPos, vTarg);
+						dist = GetVectorDistance(vPos, vTarg, true);
 					}
 
-					if( dist != 999999.0 && (g_fOptionRange[class] == 0.0 || dist < g_fOptionRange[class]) )
+					if( dist != 999999.0 && (g_fOptionRange[class] == 0.0 || dist < g_fOptionRangeSquart[class]) )
 					{
 						index = aTargets.Push(dist);
 						aTargets.Set(index, victim, INDEX_TARG_VIC);
@@ -1768,11 +1754,9 @@ MRESReturn ChooseVictim(int attacker, Handle hReturn)
 				switch( g_iOptionIncap[class] )
 				{
 					case 0: continue;
-					case 2: if( g_bPinBoomer[victim] == false ) continue;
+					case 2: if( IsClientGetVomit(victim) == false ) continue;
 				}
 			}
-
-
 
 			// =========================
 			// OPTION: "rescue"
@@ -1884,7 +1868,7 @@ MRESReturn ChooseVictim(int attacker, Handle hReturn)
 
 					if( g_iOptionPinned[class] & 8 && g_bPinCharger[victim] )
 					{
-						if( GetEntPropEnt(victim, Prop_Send, "m_carryAttacker") == -1 || GetEntPropEnt(victim, Prop_Send, "m_pummelAttacker") == -1 )
+						if( GetEntPropEnt(victim, Prop_Send, "m_carryAttacker") == -1 && GetEntPropEnt(victim, Prop_Send, "m_pummelAttacker") == -1 && L4D2_GetQueuedPummelAttacker(victim) <= 0 )
 						{
 							allPinned = false;
 							g_bPinCharger[victim] = false;
@@ -1970,7 +1954,7 @@ MRESReturn ChooseVictim(int attacker, Handle hReturn)
 
 						if( g_iOptionPinned[class] & 8 && g_bPinCharger[i] )
 						{
-							if( GetEntPropEnt(i, Prop_Send, "m_carryAttacker") == -1 || GetEntPropEnt(i, Prop_Send, "m_pummelAttacker") == -1 )
+							if( GetEntPropEnt(i, Prop_Send, "m_carryAttacker") == -1 && GetEntPropEnt(i, Prop_Send, "m_pummelAttacker") == -1 && L4D2_GetQueuedPummelAttacker(i) <= 0 )
 							{
 								allPinned = false;
 								g_bPinCharger[i] = false;
@@ -2076,7 +2060,7 @@ int OrderTest(int attacker, int victim, int team, int class, int order)
 			if( team == 2 &&
 				g_bLedgeGrab[victim] == false &&
 				g_bIncapped[victim] == false &&
-				g_bPinBoomer[victim] == false &&
+				IsClientGetVomit(victim) == false &&
 				g_bPinSmoker[victim] == false &&
 				g_bPinHunter[victim] == false &&
 				g_bPinJockey[victim] == false &&
@@ -2094,7 +2078,7 @@ int OrderTest(int attacker, int victim, int team, int class, int order)
 		// 2=Vomited Survivor
 		case 2:
 		{
-			if( team == 2 && g_bPinBoomer[victim] == true )
+			if( team == 2 && IsClientGetVomit(victim) == true )
 			{
 				newVictim = victim;
 
@@ -2151,7 +2135,7 @@ int OrderTest(int attacker, int victim, int team, int class, int order)
 		// 6=Infected Vomited
 		case 6:
 		{
-			if( team == 3 && victim != attacker && g_bPinBoomer[victim] && class != INDEX_TANK ) // Prevent Tank attacking vomited Special Infected, since the Tank won't punch them.
+			if( team == 3 && victim != attacker && IsClientGetVomit(victim) && class != INDEX_TANK ) // Prevent Tank attacking vomited Special Infected, since the Tank won't punch them.
 			{
 				newVictim = victim;
 
@@ -2614,8 +2598,8 @@ void SetOption(TARGET_SI_INDEX index, TARGET_OPTION_INDEX option, any value)
 		case INDEX_INCAP:		g_iOptionIncap[index] = value;
 		case INDEX_VOMS:		g_iOptionVoms[index] = value;
 		case INDEX_VOMS2:		g_iOptionVoms2[index] = value;
-		case INDEX_RANGE:		g_fOptionRange[index] = value;
-		case INDEX_DIST:		g_fOptionDist[index] = value;
+		case INDEX_RANGE:		{g_fOptionRange[index] = value; g_fOptionRangeSquart[index] = g_fOptionRange[index] * g_fOptionRange[index];}
+		case INDEX_DIST:		{g_fOptionDist[index] = value; g_fOptionDistSquart[index] = g_fOptionDist[index] * g_fOptionDist[index];}
 		case INDEX_WAIT:		g_fOptionWait[index] = value;
 		case INDEX_LAST:		g_iOptionLast[index] = value;
 		case INDEX_TIME:		g_fOptionLast[index] = value;
@@ -2686,7 +2670,6 @@ public void L4D_Molotov_Detonate_Post(int entity, int client)
 public void L4D2_OnHitByVomitJar_Post(int victim, int attacker)
 {
 	g_iLastBombBile[victim] = attacker;
-	PrintToChatAll("biled %d %d", attacker, victim);
 }
 
 void OnTakeDamage(int victim, int attacker, int inflictor, float damage, int damagetype)
@@ -2771,4 +2754,14 @@ int ValidateTeam(int client)
 	}
 
 	return 0;
+}
+
+bool IsClientGetVomit(int client)
+{
+	if(GetEntPropFloat(client, Prop_Send, "m_itTimer", 1) > GetGameTime())
+	{
+		return true;
+	}
+
+	return false;
 }
