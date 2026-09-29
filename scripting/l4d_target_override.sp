@@ -32,12 +32,13 @@
 
 ========================================================================================
 	Change Log:
-	
-2.34
+
+2.34 (29-Sep-2026) - Update by "HarryPotter"
+	- Removed debug print accidentally left over.
 	- Use a better method to detect whether a player has been vomited on by a Boomer (replacing "g_bPinBoomer").
 	- Fixed an issue where players hit by a Charger were not considered pinned.
-	- Calculates the distance between two vectors, the result will be squared (for optimization)
-	
+	- Calculates the distance between two vectors, the result will be squared (for optimization).
+
 2.33 (12-Jun-2026)
 	- Fixed invalid address errors from the "rescue" option. Thanks to "liquidplasma".
 
@@ -51,7 +52,7 @@
 	- Added command "sm_to_option" to get or set special infected target options, identical to the current get and set option natives.
 	- Added option "rescue" to block targeting those in a rescue vehicle. Requested by "Jedrickx".
 	- Plugin, data config and scripting include file updated.
-	
+
 2.30 (21-Mar-2025)
 	- L4D2: Plugin no longer throws error if the patch is already applied.
 	- Fixed not resetting a variable. Thanks to "Voevoda" for reporting.
@@ -307,8 +308,8 @@ int g_iOptionResc[MAX_SPECIAL];
 int g_iOptionResX[MAX_SPECIAL];
 int g_iOptionTarg[MAX_SPECIAL];
 int g_iOptionBomb[MAX_SPECIAL];
-float g_fOptionRange[MAX_SPECIAL], g_fOptionRangeSquart[MAX_SPECIAL];
-float g_fOptionDist[MAX_SPECIAL], g_fOptionDistSquart[MAX_SPECIAL];
+float g_fOptionRange[MAX_SPECIAL], g_fOptionRangeSquared[MAX_SPECIAL];
+float g_fOptionDist[MAX_SPECIAL], g_fOptionDistSquared[MAX_SPECIAL];
 float g_fOptionLast[MAX_SPECIAL];
 float g_fOptionWait[MAX_SPECIAL];
 char g_sWeaponTarget[MAX_SPECIAL][1024];
@@ -365,7 +366,7 @@ enum
 public Plugin myinfo =
 {
 	name = "[L4D & L4D2] Target Override",
-	author = "SilverShot, Harry",
+	author = "SilverShot",
 	description = "Overrides Special Infected targeting of Survivors.",
 	version = PLUGIN_VERSION,
 	url = "https://forums.alliedmods.net/showthread.php?t=322311"
@@ -733,8 +734,8 @@ void ExplodeToArray(char[] key, KeyValues hFile, int index, int arr[MAX_ORDERS])
 		g_iOptionMini[index] = hFile.GetNum("minigun");
 		g_iOptionVoms[index] = hFile.GetNum("voms");
 		g_iOptionVoms2[index] = hFile.GetNum("voms2");
-		g_fOptionRange[index] = hFile.GetFloat("range"); g_fOptionRangeSquart[index] = g_fOptionRange[index] * g_fOptionRange[index];
-		g_fOptionDist[index] = hFile.GetFloat("dist"); g_fOptionDistSquart[index] = g_fOptionDist[index] * g_fOptionDist[index];
+		g_fOptionRange[index] = hFile.GetFloat("range"); g_fOptionRangeSquared[index] = g_fOptionRange[index] * g_fOptionRange[index];
+		g_fOptionDist[index] = hFile.GetFloat("dist"); g_fOptionDistSquared[index] = g_fOptionDist[index] * g_fOptionDist[index];
 		g_fOptionWait[index] = hFile.GetFloat("wait");
 		g_iOptionLast[index] = hFile.GetNum("last");
 		g_fOptionLast[index] = hFile.GetFloat("time");
@@ -1377,10 +1378,10 @@ MRESReturn ChooseVictim(int attacker, Handle hReturn)
 				GetClientAbsOrigin(attacker, vVec);
 				float dist = GetVectorDistance(vPos, vVec, true);
 
-				if( dist < g_fOptionDistSquart[class] )
+				if( dist < g_fOptionDistSquared[class] )
 				{
 					#if DEBUG_BENCHMARK == 3
-					PrintToServer("=== Test Dist: within (squard) %0.2f / %0.2f  range to keep target.", dist, g_fOptionDistSquart[class]);
+					PrintToServer("=== Test Dist: within (squared) %0.2f / %0.2f range to keep target.", dist, g_fOptionDistSquared[class]);
 					#endif
 
 					g_fLastSwitch[attacker] = GetGameTime() + g_fOptionWait[class];
@@ -1579,7 +1580,7 @@ MRESReturn ChooseVictim(int attacker, Handle hReturn)
 						dist = GetVectorDistance(vPos, vTarg, true);
 					}
 
-					if( dist != 999999.0 && (g_fOptionRange[class] == 0.0 || dist < g_fOptionRangeSquart[class]) )
+					if( dist != 999999.0 && (g_fOptionRange[class] == 0.0 || dist < g_fOptionRangeSquared[class]) )
 					{
 						index = aTargets.Push(dist);
 						aTargets.Set(index, victim, INDEX_TARG_VIC);
@@ -1757,6 +1758,8 @@ MRESReturn ChooseVictim(int attacker, Handle hReturn)
 					case 2: if( IsClientGetVomit(victim) == false ) continue;
 				}
 			}
+
+
 
 			// =========================
 			// OPTION: "rescue"
@@ -2598,8 +2601,8 @@ void SetOption(TARGET_SI_INDEX index, TARGET_OPTION_INDEX option, any value)
 		case INDEX_INCAP:		g_iOptionIncap[index] = value;
 		case INDEX_VOMS:		g_iOptionVoms[index] = value;
 		case INDEX_VOMS2:		g_iOptionVoms2[index] = value;
-		case INDEX_RANGE:		{g_fOptionRange[index] = value; g_fOptionRangeSquart[index] = g_fOptionRange[index] * g_fOptionRange[index];}
-		case INDEX_DIST:		{g_fOptionDist[index] = value; g_fOptionDistSquart[index] = g_fOptionDist[index] * g_fOptionDist[index];}
+		case INDEX_RANGE:		{g_fOptionRange[index] = value; g_fOptionRangeSquared[index] = g_fOptionRange[index] * g_fOptionRange[index];}
+		case INDEX_DIST:		{g_fOptionDist[index] = value; g_fOptionDistSquared[index] = g_fOptionDist[index] * g_fOptionDist[index];}
 		case INDEX_WAIT:		g_fOptionWait[index] = value;
 		case INDEX_LAST:		g_iOptionLast[index] = value;
 		case INDEX_TIME:		g_fOptionLast[index] = value;
@@ -2758,7 +2761,7 @@ int ValidateTeam(int client)
 
 bool IsClientGetVomit(int client)
 {
-	if(GetEntPropFloat(client, Prop_Send, "m_itTimer", 1) > GetGameTime())
+	if( GetEntPropFloat(client, Prop_Send, "m_itTimer", 1) > GetGameTime() )
 	{
 		return true;
 	}
